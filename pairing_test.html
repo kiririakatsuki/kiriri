@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kiriri姿勢チェッカー</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* 基本設定 */
+        body {
+            font-family: 'Segoe UI', Meiryo, 'Hiragino Kaku Gothic ProN', 'メイリオ', sans-serif;
+            padding: 10px;
+            max-width: 800px;
+            margin: 15px auto 0 auto;
+            color: #444;
+            background-color: #f8f8f8;
+            line-height: 1.6;
+            box-sizing: border-box;
+            display: flex; 
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        html {
+            box-sizing: border-box;
+            scroll-behavior: smooth;
+        }
+        *, *:before, *:after {
+            box-sizing: inherit;
+        }
+        .content-wrapper {
+            flex: 1 0 auto;
+        }
+
+        /* ロゴ */
+        .header-logo {
+            display: block; margin: 0 auto 25px auto; max-width: 220px; height: auto;
+        }
+
+        /* 見出し */
+        h1 {
+            color: #CC3333; text-align: center; margin-bottom: 30px; font-size: 1.8em; border-bottom: none;
+        }
+        h2 {
+            color: #CC3333; border-bottom: 2px solid #e0e0e0; padding-bottom: 8px; margin-top: 30px; 
+            margin-bottom: 15px; font-size: 1.4em;
+        }
+
+        /* ボタン */
+        button {
+            font-size: 0.9em; padding: 10px 15px; margin-right: 5px; margin-bottom: 10px;
+            cursor: pointer; border: 1px solid #CC3333; border-radius: 6px; background-color: #fff;
+            color: #CC3333; font-weight: bold; transition: all 0.2s ease-in-out;
+        }
+        button:hover:not(:disabled) {
+            background-color: #CC3333; color: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.15); transform: translateY(-1px);
+        }
+        button:disabled {
+            cursor: not-allowed; opacity: 0.5; background-color: #f0f0f0;
+            border-color: #d0d0d0; color: #999;
+        }
+
+        /* データ表示エリア */
+        .data-display p {
+            margin: 8px 0; font-size: 1em; line-height: 1.5;
+        }
+        .data-display strong {
+            color: #333;
+        }
+
+        /* メッセージ表示エリアのスタイル */
+        .info, .success, .warning, .error {
+            padding: 10px; margin-top: 10px; border-radius: 4px; font-weight: 500; border: 1px solid;
+        }
+        .info { color: #00529B; background-color: #BDE5F8; border-color: #00529B;}
+        .success { color: #4F8A10; background-color: #DFF2BF; border-color: #4F8A10;}
+        .warning { color: #856404; background-color: #fff3cd; border-color: #ffeeba;}
+        .error { color: #CC3333; background-color: #FFBABA; border-color: #CC3333; font-weight: bold;}
+
+        /* グラフコンテナ */
+        .chart-container {
+            width: 100%; max-width: 700px; margin: 10px auto; padding: 10px;
+            border: 1px solid #ccc; border-radius: 8px; background-color: #fff;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.08); position: relative; height: 300px;
+        }
+        .chart-container canvas {
+            max-width: 100%; height: auto !important;
+        }
+
+        hr { display: none; }
+        .section {
+            margin-bottom: 20px; padding: 15px; background-color: #ffffff;
+            border: 1px solid #e0e0e0; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.06);
+        }
+
+        .button-group {
+            margin-bottom: 10px; display: flex; flex-wrap: wrap; align-items: center;
+        }
+        .button-group button { margin-top: 5px; }
+        .button-group span { margin-left: 10px; }
+
+        #messageDisplay {
+             padding: 10px; margin-top: 10px; border-radius: 4px; font-weight: 500; border: 1px solid transparent;
+        }
+
+        /* 「トップへ戻る」ボタン用のスタイル */
+        .scroll-to-top {
+            position: fixed; bottom: 30px; right: 30px; padding: 10px 15px;
+            background-color: #555; color: white; border: none; border-radius: 5px;
+            cursor: pointer; display: none; font-size: 1.2em; z-index: 1000;
+            opacity: 0.7; transition: opacity 0.3s, background-color 0.3s;
+        }
+        .scroll-to-top:hover {
+            opacity: 1; background-color: #CC3333;
+        }
+        
+        /* フッター用のスタイル */
+        .site-footer {
+            background-color: #CC3333; 
+            color: #FFFFFF; 
+            text-align: center;
+            padding: 20px 10px; 
+            margin-top: auto; 
+            font-size: 0.8em; 
+        }
+
+        /* ▼▼▼ ステップ7-1a追加スタイル ▼▼▼ */
+        .live-angle-dashboard {
+            background-color: #fff; /* 背景色を白に */
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.06);
+            padding: 20px;
+            margin-bottom: 20px;
+            text-align: center; /* 子要素を中央揃えに */
+            display: flex; /* 横並びにするためにflexを使用 */
+            justify-content: space-around; /* 各angle-cardを均等に配置 */
+            flex-wrap: wrap; /* 小画面で折り返すように */
+        }
+
+        .angle-card {
+            display: inline-block; /* 横並びの要素として */
+            margin: 10px 15px;   /* カード間のマージン */
+            padding: 15px;
+            border-radius: 8px;
+            background-color: #f9f9f9; /* カードの背景色 */
+            min-width: 180px; /* カードの最小幅 */
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .angle-label {
+            font-size: 1.1em;
+            color: #555;
+            margin-bottom: 5px;
+        }
+
+        .angle-value {
+            font-size: 3.2em; /* PCでの基本フォントサイズ */
+            font-weight: bold;
+            color: #CC3333; /* テーマカラー */
+            line-height: 1.1;
+            margin: 5px 0;
+        }
+
+        .angle-unit {
+            font-size: 0.9em;
+            color: #777;
+        }
+
+        .chart-section h2 { /* グラフセクションの見出しスタイル調整 */
+            text-align: center; /* 中央揃えにするなど */
+            border-bottom: none; /* 下線を消すなど */
+            margin-bottom: 10px;
+        }
+
+        /* --- タブレット向けスタイル (画面幅 1024px 以下) --- */
+        @media screen and (max-width: 1024px) {
+            .live-angle-dashboard {
+                padding: 15px;
+            }
+            .angle-card {
+                min-width: 160px;
+                margin: 10px;
+            }
+            .angle-value {
+                font-size: 2.8em; /* タブレットでは少しフォントサイズを調整 */
+            }
+            .angle-label {
+                font-size: 1em;
+            }
+        }
+
+        /* --- スマートフォン向けスタイル (画面幅 767px 以下) --- */
+        @media screen and (max-width: 767px) {
+            .live-angle-dashboard {
+                flex-direction: column; /* スマホでは縦積みに */
+                align-items: center;  /* 中央揃え */
+                padding: 10px;
+            }
+            .angle-card {
+                width: 90%; /* カード幅を画面に合わせる */
+                max-width: 300px; /* 最大幅は設ける */
+                min-width: 0; /* 最小幅をリセット */
+                margin: 10px 0; /* 上下マージンのみに */
+                padding: 12px;
+            }
+            .angle-value {
+                font-size: 2.5em; /* スマホでのフォントサイズ */
+            }
+            .angle-label {
+                font-size: 0.95em;
+            }
+            .angle-unit {
+                font-size: 0.85em;
+            }
+
+            /* スマホではボタンを縦積みにし、幅を広げる */
+            .button-group {
+                flex-direction: column;
+                align-items: stretch; /* ボタンを親要素の幅に広げる */
+            }
+            .button-group button {
+                width: 100%;
+                margin-right: 0;
+                margin-left: 0;
+            }
+            .button-group span { /* 基準角度表示 */
+                margin-left: 0;
+                margin-top: 8px;
+                display: block;
+                text-align: center;
+            }
+
+            /* 他の要素もスマホ向けに微調整 */
+            h1 { font-size: 1.5em; margin-bottom: 20px; }
+            h2 { font-size: 1.2em; margin-bottom: 10px; }
+            .section { padding: 12px; margin-bottom: 15px; }
+            .chart-container { height: 220px; }
+        }
+        /* ▲▲▲ ステップ7-1a追加スタイルここまで ▲▲▲ */
+
+    </style>
+</head>
+<body>
+    <div class="content-wrapper">
+        <img src="logo-akatsuki.webp" alt="Kiriri Logo" class="header-logo">
+        
+        <h1>Kiriri姿勢チェッカー</h1>
+
+        <div class="section">
+            <h2>1. 接続</h2>
+            <button id="pairButton">Kiririセンサーとペアリング</button>
+            <button id="disconnectButton" disabled>センサーから切断</button>
+            <div id="statusMessages" class="info" style="margin-top:10px;">ページの準備ができました。「ペアリング開始」ボタンを押してください。</div>
+            <p class="data-display">センサーID: <strong id="sensorIdDisplay">---</strong></p>
+        </div>
+
+        <!-- ▼▼▼ HTML変更箇所: 「現在の傾き」表示を強調 ▼▼▼ -->
+        <div id="liveAngleDashboard" class="section live-angle-dashboard">
+            <div class="angle-card">
+                <p class="angle-label">前後 (Y軸)</p>
+                <p id="yAngleDisplay" class="angle-value">---</p>
+                <p class="angle-unit">度</p>
+            </div>
+            <div class="angle-card">
+                <p class="angle-label">左右 (X軸)</p>
+                <p id="xAngleDisplay" class="angle-value">---</p>
+                <p class="angle-unit">度</p>
+            </div>
+        </div>
+
+        <!-- ▼▼▼ HTML変更箇所: グラフ表示エリアを独立したセクションに ▼▼▼ -->
+        <div class="section chart-section">
+            <h2>グラフ表示</h2>
+            <div class="chart-container">
+                <canvas id="postureChart"></canvas>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>3. 操作と設定</h2>
+            <div class="button-group">
+              <button id="calibrateButton">A. 今の姿勢を覚える</button>
+              <span style="margin-left: 15px;">
+                  基準角度 (Y/X): <strong id="refYDisplay">---</strong> / <strong id="refXDisplay">---</strong>
+              </span>
+            </div>
+            <div class="button-group">
+               <button id="startMeasurementButton">B. 計測開始</button>
+               <button id="endMeasurementButton">C. 計測終了</button>
+            </div>
+            <div class="button-group">
+              <button id="feedbackOnButton">フィードバック ON</button>
+              <button id="feedbackOffButton">フィードバック OFF</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>4. 姿勢フィードバック</h2>
+            <p id="messageDisplay" class="info">---</p>
+        </div>
+
+        <script src="pairing_test.js"></script>
+    </div> 
+    <footer class="site-footer">
+        Copyright &copy; 2025 Akatsuki MFG. Co., Ltd. All Rights Reserved.
+    </footer>
+    <button id="scrollTopButton" class="scroll-to-top" title="トップへ戻る">↑</button>
+
+</body>
+</html>
