@@ -4,6 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kiriri姿勢チェッカー</title>
+    <!-- Content Security Policy (CSP) を追加 -->
+    <!-- 'self' は同じオリジンからのリソースを許可します。 -->
+    <!-- script-src には Chart.js が読み込まれる cdn.jsdelivr.net を追加しています。 -->
+    <!-- style-src に 'unsafe-inline' を含めるのは、HTML内に直接記述された <style> タグを許可するためです。 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self';">
+    
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         /* 基本設定 */
@@ -300,7 +306,7 @@
         </div>
 
         <script src="pairing_test.js"></script>
-    </div> 
+    </div>    
     <footer class="site-footer">
         Copyright &copy; 2025 Akatsuki MFG. Co., Ltd. All Rights Reserved.
     </footer>
