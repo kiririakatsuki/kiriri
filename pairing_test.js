@@ -1,4 +1,4 @@
-// pairing_test.js (KIRIRI01対応完全版)
+// pairing_test.js (KIRIRI01対応完全版 - 安定化版)
 
 // --- HTML Element References ---
 const pairButton = document.getElementById('pairButton');
@@ -318,7 +318,11 @@ function handleAngleData(event) {
                 }
             } else {
                 logStatus(`データ形式エラー(分割): ${receivedText}`, 'error');
+                console.error("Data format error (split):", receivedText); // 詳細ログ
             }
+        } else {
+            logStatus(`予期しないデータプレフィックス: ${receivedText.substring(0, 5)}...`, 'warning');
+            console.warn("Unexpected data prefix:", receivedText); // 詳細ログ
         }
     } catch (error) {
         logStatus(`角度データ処理エラー: ${error}`, 'error');
@@ -330,36 +334,35 @@ function handleAngleData(event) {
 async function initializeKIRIRI01() {
     try {
         if (!rxCharacteristic) {
-            console.error("RX特性が取得できていません");
+            console.error("RX特性が取得できていません。KIRIRI01の初期化をスキップします。");
             return false;
         }
 
         logStatus('KIRIRI01の初期化を試みています...', 'info');
         
-        // いくつかの初期化パターンを試す
         // パターン1: 改行付きSTARTコマンド
         try {
             const startCmd = new TextEncoder().encode('START\n');
             await rxCharacteristic.writeValue(startCmd);
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise(resolve => setTimeout(resolve, 200)); // 待機時間を延長
             console.log("STARTコマンド送信成功");
         } catch (e) {
-            console.log("STARTコマンド送信失敗:", e.message);
+            console.error("STARTコマンド送信失敗:", e); // エラーオブジェクト全体をログ
         }
 
         // パターン2: 単純な初期化バイト
         try {
             const initCmd = new Uint8Array([0x01]);
             await rxCharacteristic.writeValue(initCmd);
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise(resolve => setTimeout(resolve, 200)); // 待機時間を延長
             console.log("初期化バイト送信成功");
         } catch (e) {
-            console.log("初期化バイト送信失敗:", e.message);
+            console.error("初期化バイト送信失敗:", e); // エラーオブジェクト全体をログ
         }
 
         return true;
     } catch (error) {
-        console.error("KIRIRI01初期化エラー:", error);
+        console.error("KIRIRI01初期化関数内で予期せぬエラー:", error);
         return false;
     }
 }
@@ -372,7 +375,7 @@ if (pairButton) {
             return;
         }
         
-        onDisconnected();
+        onDisconnected(); // UI状態をリセット
         logStatus('Kiririセンサーを探しています...', 'info');
         if (pairButton) pairButton.disabled = true;
         if (disconnectButton) disconnectButton.disabled = true;
@@ -394,56 +397,89 @@ if (pairButton) {
             logStatus('センサーに接続しています...', 'info');
 
             bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
-            bleServer = await bleDevice.gatt.connect();
-            logStatus('GATTサーバーに接続完了。', 'success');
+            
+            // GATTサーバーへの接続
+            try {
+                bleServer = await bleDevice.gatt.connect();
+                logStatus('GATTサーバーに接続完了。', 'success');
+            } catch (e) {
+                console.error("GATT接続失敗:", e);
+                throw new Error(`GATTサーバー接続に失敗しました: ${e.message || e}`);
+            }
             isConnected = true;
             if (sensorIdDisplay) sensorIdDisplay.textContent = deviceName;
             
             // サービス取得
-            const service = await bleServer.getPrimaryService(KIRIRI_SERVICE_UUID);
-            logStatus('サービスに接続しました。', 'info');
+            let service;
+            try {
+                service = await bleServer.getPrimaryService(KIRIRI_SERVICE_UUID);
+                logStatus('サービスに接続しました。', 'info');
+            } catch (e) {
+                console.error("サービス取得失敗:", e);
+                throw new Error(`サービス取得に失敗しました: ${e.message || e}`);
+            }
             
-            // KIRIRI01の初期化処理を一旦コメントアウトし、通知開始を優先する
-            // if (currentSensorType === 'KIRIRI01') {
-            //     try {
-            //         rxCharacteristic = await service.getCharacteristic(RX_CHARACTERISTIC_UUID);
-            //         logStatus('RX特性を取得しました。', 'info');
+            // KIRIRI01の初期化処理を有効にする
+            if (currentSensorType === 'KIRIRI01') {
+                try {
+                    rxCharacteristic = await service.getCharacteristic(RX_CHARACTERISTIC_UUID);
+                    logStatus('RX特性を取得しました。', 'info');
                     
-            //         // 初期化を試みる
-            //         await initializeKIRIRI01();
-            //     } catch (e) {
-            //         console.log('RX特性の取得に失敗:', e.message);
-            //     }
-            // }
+                    const initSuccess = await initializeKIRIRI01(); // ここで初期化を実行
+                    if (!initSuccess) {
+                        logStatus('KIRIRI01の初期化に失敗しました。データ受信できない可能性があります。', 'warning');
+                        // ここではthrowせず、データ受信を試行するが、コンソールに警告を出す
+                    }
+                } catch (e) {
+                    console.error('RX特性の取得または初期化に失敗 (KIRIRI01):', e);
+                    logStatus(`KIRIRI01初期化準備中にエラー: ${e.message || e}`, 'error');
+                    throw e; // 初期化準備失敗で接続を中断
+                }
+            }
             
             // TX特性（通知用）を取得
-            angleCharacteristic = await service.getCharacteristic(TX_CHARACTERISTIC_UUID);
-            logStatus('TX特性を取得しました。', 'info');
+            try {
+                angleCharacteristic = await service.getCharacteristic(TX_CHARACTERISTIC_UUID);
+                logStatus('TX特性を取得しました。', 'info');
+            } catch (e) {
+                console.error("TX特性取得失敗:", e);
+                throw new Error(`TX特性取得に失敗しました: ${e.message || e}`);
+            }
             
             // イベントハンドラを先に設定
             angleCharacteristic.addEventListener('characteristicvaluechanged', handleAngleData);
             
-            // KIRIRI01の場合はさらに待機 ← このブロックもコメントアウト
-            // if (currentSensorType === 'KIRIRI01') {
-            //     logStatus('通知開始前の待機中...', 'info');
-            //     await new Promise(resolve => setTimeout(resolve, 1000));
-            // }
+            // KIRIRI01の場合はさらに待機 (センサーの準備を待つため)
+            if (currentSensorType === 'KIRIRI01') {
+                logStatus('通知開始前の待機中 (2秒)...', 'info');
+                await new Promise(resolve => setTimeout(resolve, 2000)); // 2秒待機に延長
+            }
             
             // 通知を開始
-            logStatus('通知を開始しています...', 'info');
-            await angleCharacteristic.startNotifications();
-            
-            logStatus('データ受信待機中...', 'info');
-            updateMessageDisplay("接続成功！「A. 今の姿勢を覚える」で基準を設定してください。", "success");
+            try {
+                logStatus('通知を開始しています...', 'info');
+                await angleCharacteristic.startNotifications();
+                logStatus('データ受信待機中...', 'info');
+                updateMessageDisplay("接続成功！「A. 今の姿勢を覚える」で基準を設定してください。", "success");
+            } catch (e) {
+                console.error("通知開始失敗:", e);
+                throw new Error(`通知開始に失敗しました: ${e.message || e}`);
+            }
 
         } catch (error) {
             logStatus(`ペアリング/接続エラー: ${error.message || error}`, 'error');
-            console.error("Pairing/Connection Error: ", error);
+            console.error("Pairing/Connection Error: ", error); // エラーオブジェクト全体をログ
             isConnected = false;
+            // エラーが発生した場合も、可能であれば切断処理を行う
             if (bleDevice && bleDevice.gatt && bleDevice.gatt.connected) {
-                try { await bleDevice.gatt.disconnect(); } catch (e) { /* ignore */ }
+                try { 
+                    logStatus("エラー発生のためGATT切断を試行...", 'warning');
+                    await bleDevice.gatt.disconnect(); 
+                } catch (e) { 
+                    console.error("GATT切断中にエラー:", e);
+                }
             }
-            onDisconnected();
+            onDisconnected(); // UIリセット
         }
         updateButtonStates();
     };
