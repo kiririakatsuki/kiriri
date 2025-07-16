@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Kiririセンサーブリッジプログラム (更新版)
+# Kiririセンサーブリッジプログラム (安定版)
 # 割り込み処理(handle_data)の堅牢性を最大限に高めたバージョン
 
 import asyncio
@@ -68,8 +68,6 @@ async def scan_and_select_sensor() -> Optional[str]:
             logging.warning("センサー選択がキャンセルされました。")
             return None
 
-# ▼▼▼ ここから下がご指摘のあった、堅牢なデータ処理部分です ▼▼▼
-
 # データ解析で使用するバイト定数
 START_MARKER = b'N:'
 SEPARATOR = b':'
@@ -77,49 +75,48 @@ END_MARKER = b'\r'
 
 def handle_data(sender: int, data: bytearray):
     """
-    BLEデータ受信時のコールバック関数（割り込みスレッドでの動作を想定）
-    例外を極力発生させず、不正なデータは単に無視する堅牢な実装。
+    受信したBLEデータを解析する関数。
+    データ形式が不正な場合は、例外を発生させずに安全に処理を抜ける。
     """
     global latest_angles, new_data_available
 
     try:
-        # 1. 開始マーカー 'N:' の位置を探す (データずれに対応)
+        # 1. 開始マーカー 'N:' を探す
         start_index = data.find(START_MARKER)
         if start_index == -1:
-            return  # マーカーが見つからなければ、処理せず抜ける
+            return  # 見つからなければ処理せず抜ける
 
-        # 2. Y軸とX軸を区切る2番目の ':' の位置を探す
+        # 2. 2番目の ':' を探す
         separator_index = data.find(SEPARATOR, start_index + len(START_MARKER))
         if separator_index == -1:
-            return  # 2番目の区切り文字がなければ不正な形式。処理せず抜ける
+            return  # 見つからなければ処理せず抜ける
 
-        # 3. 終端マーカー '\r' の位置を探す
+        # 3. 終端マーカー '\r' を探す
         end_index = data.find(END_MARKER, separator_index + 1)
         if end_index == -1:
-            return  # 終端マーカーがなければ不正な形式。処理せず抜ける
-
-        # 4. バイト配列からY軸とX軸のデータをスライスで切り出す
+            return  # 見つからなければ処理せず抜ける
+        
+        # 4. データを切り出す
         y_bytes = data[start_index + len(START_MARKER) : separator_index]
         x_bytes = data[separator_index + 1 : end_index]
         
-        # 5. バイト配列を直接整数に変換。
+        # 5. 整数に変換する
         y_val = int(y_bytes)
         x_val = int(x_bytes)
 
-        # 6. 正常に変換できた場合のみ、グローバル変数を更新
+        # 6. 正常に処理できた場合のみ、値を更新する
         latest_angles["y"] = y_val / 100.0
         latest_angles["x"] = x_val / 100.0
         new_data_available.set()
 
     except ValueError:
-        # int()変換に失敗した場合。不正なデータとして静かに処理を終了。
+        # 整数への変換に失敗した場合 (例: データに文字が混ざっていた)
+        # 何もせず、静かに処理を抜ける
         return
     except Exception as e:
-        # 想定外の重大なエラーが発生した場合のみログに残す
-        logging.error(f"handle_dataで予期せぬ重大なエラー: {e} - データ: {data}")
+        # その他の予期せぬ重大なエラーが発生した場合
+        logging.error(f"handle_dataで予期せぬ重大なエラー: {e}")
         return
-
-# ▲▲▲ ここまでが堅牢なデータ処理部分です ▲▲▲
 
 async def send_data_to_clients():
     """最新の角度データを接続中の全WebSocketクライアントに送信し続ける"""
