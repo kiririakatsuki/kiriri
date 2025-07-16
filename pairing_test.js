@@ -1,7 +1,7 @@
 // pairing_test.js (多機能・高安定版)
 // - Web Bluetoothによる直接接続と、Pythonブリッジ経由のWebSocket接続に対応
 // - 計測データのエクスポート機能を追加
-// - 詳細なコメントとエラーハンドリングを強化
+// - BLEデータ処理の堅牢性を向上
 
 // --- グローバル定数 ---
 const KIRIRI_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
@@ -87,7 +87,7 @@ function updateButtonStates() {
     const isModeSelected = !!connectionMode;
     connectButton.disabled = !isModeSelected || isConnected;
     disconnectButton.disabled = !isModeSelected || !isConnected;
-    
+
     calibrateButton.disabled = !isConnected || isMeasuring;
     startMeasurementButton.disabled = !isConnected || isMeasuring || referenceY === null;
     endMeasurementButton.disabled = !isConnected || !isMeasuring;
@@ -138,7 +138,6 @@ function initializeChart() {
 
 /**
  * センサーから受信した角度データでUIとグラフを更新します。
- * この関数はBLEとWebSocketの両方のデータハンドラから呼び出されます。
  * @param {number} y - Y軸の角度
  * @param {number} x - X軸の角度
  */
@@ -148,7 +147,7 @@ function updateAngleValues(y, x) {
 
     if (yAngleDisplay) yAngleDisplay.textContent = currentY.toFixed(2);
     if (xAngleDisplay) xAngleDisplay.textContent = currentX.toFixed(2);
-    
+
     if (isMeasuring && myPostureChart) {
         const now = new Date();
         const timestamp = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -162,7 +161,7 @@ function updateAngleValues(y, x) {
             chartYData.shift();
             chartXData.shift();
         }
-        
+
         myPostureChart.data.labels = chartTimestamps;
         myPostureChart.data.datasets[0].data = chartYData;
         myPostureChart.data.datasets[1].data = chartXData;
@@ -218,7 +217,7 @@ async function connectWebSocket() {
         };
 
         webSocket.onerror = (error) => {
-            logStatus(`WebSocketエラー: ${error.message || '接続に失敗しました'}`, 'error');
+            logStatus(`WebSocketエラー: 接続に失敗しました。URLやPythonブリッジの状態を確認してください。`, 'error');
             handleDisconnect();
         };
 
@@ -249,6 +248,7 @@ async function connectBLE() {
         
         bleDevice.addEventListener('gattserverdisconnected', handleDisconnect);
 
+        // 各ステップを個別のtry-catchで囲み、エラー箇所を特定しやすくする
         logStatus('GATTサーバーに接続しています...', 'info');
         bleServer = await bleDevice.gatt.connect();
         
@@ -270,32 +270,57 @@ async function connectBLE() {
     } catch (error) {
         logStatus(`BLE接続エラー: ${error.message}`, 'error');
         console.error("BLE Connection Error:", error);
-        handleDisconnect(); // エラー発生時に状態をリセット
+        handleDisconnect();
     } finally {
         updateButtonStates();
     }
 }
 
 /**
- * BLEデバイスからのデータ通知を処理します。
+ * BLEデバイスからのデータ通知を堅牢に処理します。
  * @param {Event} event - characteristicvaluechangedイベント
  */
 function handleBleData(event) {
+    const value = event.target.value; // DataViewオブジェクト
+    if (!value) return;
+
     try {
-        const value = event.target.value;
         const textDecoder = new TextDecoder('utf-8');
         const receivedText = textDecoder.decode(value);
 
-        if (receivedText.startsWith("N:")) {
-            const parts = receivedText.substring(2).split(':');
-            if (parts.length === 2) {
-                const yRaw = parseInt(parts[0].trim(), 10);
-                const xRaw = parseInt(parts[1].trim(), 10);
-                updateAngleValues(yRaw / 100.0, xRaw / 100.0);
-            }
+        // 'N:'で始まるか確認
+        const startIndex = receivedText.indexOf('N:');
+        if (startIndex === -1) {
+            return; // マーカーがなければ無視
         }
+
+        // 'N:'以降の文字列を対象にする
+        const dataPart = receivedText.substring(startIndex + 2);
+
+        // 2番目の':'を探す
+        const separatorIndex = dataPart.indexOf(':');
+        if (separatorIndex === -1) {
+            return; // 区切り文字がなければ無視
+        }
+
+        // データを分割
+        const yStr = dataPart.substring(0, separatorIndex);
+        const xStr = dataPart.substring(separatorIndex + 1);
+
+        // 数値に変換
+        const yRaw = parseInt(yStr, 10);
+        const xRaw = parseInt(xStr, 10);
+
+        // 数値でなければNaNになるので、それをチェック
+        if (isNaN(yRaw) || isNaN(xRaw)) {
+            return; // 数値変換に失敗したら無視
+        }
+
+        updateAngleValues(yRaw / 100.0, xRaw / 100.0);
+
     } catch (error) {
-        logStatus(`BLEデータ処理エラー: ${error.message}`, 'error');
+        // 基本的に上のチェックで防がれるが、念のため
+        logStatus(`BLEデータ処理の例外: ${error.message}`, 'error');
     }
 }
 
@@ -320,14 +345,12 @@ async function handleConnect() {
 async function handleDisconnect() {
     logStatus('切断処理を実行しています...', 'info');
 
-    // WebSocketの切断
     if (webSocket) {
-        webSocket.onclose = null; // イベントリスナーを削除して意図しない再実行を防ぐ
+        webSocket.onclose = null;
         webSocket.close();
         webSocket = null;
     }
 
-    // BLEの切断
     if (bleDevice) {
         bleDevice.removeEventListener('gattserverdisconnected', handleDisconnect);
         if (bleDevice.gatt && bleDevice.gatt.connected) {
@@ -341,7 +364,6 @@ async function handleDisconnect() {
         bleDevice = null;
     }
 
-    // 状態とUIをリセット
     isConnected = false;
     isMeasuring = false;
     isFeedbackActive = false;
@@ -353,7 +375,6 @@ async function handleDisconnect() {
     refYDisplay.textContent = '---';
     refXDisplay.textContent = '---';
 
-    // グラフのデータをリセット
     chartTimestamps = [];
     chartYData = [];
     chartXData = [];
@@ -399,7 +420,6 @@ function startMeasurement() {
     isMeasuring = true;
     isFeedbackActive = false;
     
-    // グラフデータをクリア
     chartTimestamps = [];
     chartYData = [];
     chartXData = [];
@@ -445,14 +465,10 @@ function exportDataAsCsv() {
     updateMessageDisplay("計測終了。データがコンソールに出力されました。", "success");
 }
 
-
 /**
  * 姿勢をチェックし、フィードバックメッセージを表示します。
- * (この関数の内容は簡略化のため省略)
  */
 function checkPosture(y, x) {
-    // この関数の実装は以前のコードと同じため、ここでは省略します。
-    // 必要に応じて、以前のコードからフィードバックメッセージの定義とロジックをコピーしてください。
     if (referenceY === null) return;
     const diffY = y - referenceY;
     const diffX = x - referenceX;
@@ -471,10 +487,8 @@ function checkPosture(y, x) {
  * ページの読み込みが完了したときに実行されるメインの処理です。
  */
 document.addEventListener('DOMContentLoaded', () => {
-    // グラフの初期化
     initializeChart();
 
-    // ボタンのイベントリスナーを設定
     connectButton.onclick = handleConnect;
     disconnectButton.onclick = handleDisconnect;
     calibrateButton.onclick = calibratePosture;
@@ -483,7 +497,6 @@ document.addEventListener('DOMContentLoaded', () => {
     feedbackOnButton.onclick = () => { isFeedbackActive = true; updateButtonStates(); };
     feedbackOffButton.onclick = () => { isFeedbackActive = false; updateButtonStates(); };
 
-    // 接続モードの切り替えイベント
     connectModeSelect.addEventListener('change', (event) => {
         connectionMode = event.target.value;
         if (connectionMode === 'ble') {
@@ -496,7 +509,6 @@ document.addEventListener('DOMContentLoaded', () => {
         updateButtonStates();
     });
 
-    // トップへ戻るボタン
     if (scrollTopButton) {
         window.onscroll = () => {
             scrollTopButton.style.display = (document.body.scrollTop > 100 || document.documentElement.scrollTop > 100) ? "block" : "none";
@@ -504,6 +516,5 @@ document.addEventListener('DOMContentLoaded', () => {
         scrollTopButton.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    // 初期状態の設定
-    handleDisconnect(); // 初期状態をリセットして開始
+    handleDisconnect();
 });
