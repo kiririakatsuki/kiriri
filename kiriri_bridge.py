@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Kiririセンサーブリッジプログラム (最終安定版)
 # - KIRIRI01/02の開始コマンド送信に対応
-# - 割り込み処理(handle_data)の堅牢性を最大限に高めたバージョン
+# - 割り込み処理(handle_data)の堅牢性を最重要視し、例外発生を根絶
 
 import asyncio
 import websockets
@@ -12,9 +12,9 @@ import sys
 from typing import Set, Dict, Optional, Any, List
 
 # --- 基本設定 ---
-TARGET_DEVICE_NAMES: List[str] = ["KIRIRI02", "KIRIRI01", "KIRI"] # 02を優先的に探す
-DATA_UUID: str = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"      # データ受信(Notify)用
-RX_UUID: str = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"      # コマンド送信(Write)用
+TARGET_DEVICE_NAMES: List[str] = ["KIRIRI02", "KIRIRI01", "KIRI"]
+DATA_UUID: str = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+RX_UUID: str = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 WEBSOCKET_HOST: str = "localhost"
 WEBSOCKET_PORT: int = 8765
 RECONNECT_DELAY: float = 5.0
@@ -72,41 +72,52 @@ async def scan_and_select_sensor() -> Optional[str]:
 
 # データ解析で使用するバイト定数
 START_MARKER = b'N:'
-SEPARATOR = b':'
-END_MARKER = b'\r'
+SEPARATOR = ord(':')  # バイト値として取得
+END_MARKER = ord('\r')
 
 def handle_data(sender: int, data: bytearray):
     """
-    受信したBLEデータを解析する関数。
-    データ形式が不正な場合は、例外を発生させずに安全に処理を抜ける。
+    受信したBLEデータを解析する関数。例外を発生させないことを最優先とする。
+    データが不正な場合は、何もせずに関数を終了する。
     """
     global latest_angles, new_data_available
 
+    # 1. 開始マーカー 'N:' を探す
     try:
-        start_index = data.find(START_MARKER)
-        if start_index == -1: return
+        start_pos = data.index(START_MARKER)
+    except ValueError:
+        return  # マーカーがなければ処理を終了
 
-        separator_index = data.find(SEPARATOR, start_index + len(START_MARKER))
-        if separator_index == -1: return
+    # 2. 2番目の ':' を探す
+    try:
+        # 開始マーカーの直後から検索
+        separator_pos = data.index(SEPARATOR, start_pos + 2)
+    except ValueError:
+        return  # 区切りがなければ処理を終了
 
-        end_index = data.find(END_MARKER, separator_index + 1)
-        if end_index == -1: return
-        
-        y_bytes = data[start_index + len(START_MARKER) : separator_index]
-        x_bytes = data[separator_index + 1 : end_index]
-        
+    # 3. 終端マーカー '\r' を探す
+    try:
+        # 区切り文字の直後から検索
+        end_pos = data.index(END_MARKER, separator_pos + 1)
+    except ValueError:
+        return  # 終端がなければ処理を終了
+
+    # 4. データを切り出す
+    y_bytes = data[start_pos + 2 : separator_pos]
+    x_bytes = data[separator_pos + 1 : end_pos]
+
+    # 5. 整数に変換
+    try:
         y_val = int(y_bytes)
         x_val = int(x_bytes)
-
-        latest_angles["y"] = y_val / 100.0
-        latest_angles["x"] = x_val / 100.0
-        new_data_available.set()
-
     except ValueError:
-        return
-    except Exception as e:
-        logging.error(f"handle_dataで予期せぬ重大なエラー: {e}")
-        return
+        return  # 数値でなければ処理を終了
+
+    # 6. 全てのチェックを通過した場合のみ値を更新
+    latest_angles["y"] = y_val / 100.0
+    latest_angles["x"] = x_val / 100.0
+    new_data_available.set()
+
 
 async def send_data_to_clients():
     """最新の角度データを接続中の全WebSocketクライアントに送信し続ける"""
@@ -140,7 +151,6 @@ async def ble_connect_and_notify(sensor_address: str):
                 if client.is_connected:
                     logging.info(f"センサー ({client.address}) に接続成功！")
 
-                    # KIRIRI01/02の場合、開始コマンドを送信する
                     device_name = client.name if hasattr(client, 'name') else ""
                     if "KIRIRI01" in device_name or "KIRIRI02" in device_name:
                         logging.info(f"{device_name} のため、開始コマンドを送信します。")
