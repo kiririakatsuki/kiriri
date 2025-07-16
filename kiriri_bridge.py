@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-# Kiririセンサーブリッジプログラム (推奨版)
-# websockets v10+ と bleak のモダンな書き方に対応し、データ解析の堅牢性を確保
+# Kiririセンサーブリッジプログラム (更新版)
+# 割り込み処理(handle_data)の堅牢性を最大限に高めたバージョン
 
 import asyncio
 import websockets
@@ -8,25 +8,14 @@ import json
 from bleak import BleakScanner, BleakClient, BleakError
 import logging
 import sys
-from typing import Set, Dict, Optional, Any, List, Tuple
+from typing import Set, Dict, Optional, Any, List
 
 # --- 基本設定 ---
-# 接続したいセンサーのBluetoothデバイス名
 TARGET_DEVICE_NAMES: List[str] = ["KIRIRI01", "KIRI"]
-
-# 角度データが送られてくるキャラクタリスティックのUUID
 DATA_UUID: str = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
-
-# WebSocketサーバーの設定
-# PC内のみ接続許可する場合は "localhost"
-# 同じネットワークのスマホ等から接続する場合は "0.0.0.0" に変更
 WEBSOCKET_HOST: str = "localhost"
 WEBSOCKET_PORT: int = 8765
-
-# センサーとの接続が切れた際の再接続試行までの待機時間 (秒)
 RECONNECT_DELAY: float = 5.0
-
-# BLEスキャン時間 (秒)
 SCAN_TIMEOUT: float = 10.0
 # ----------------
 
@@ -47,7 +36,6 @@ async def scan_and_select_sensor() -> Optional[str]:
     logging.info(f"'{', '.join(TARGET_DEVICE_NAMES)}' センサーを探しています (最大{SCAN_TIMEOUT}秒)...")
     
     try:
-        # discoverで見つかったデバイスの中から対象のものを辞書に格納
         found_devices = {
             dev.address: dev.name
             for dev in await BleakScanner.discover(timeout=SCAN_TIMEOUT)
@@ -58,7 +46,7 @@ async def scan_and_select_sensor() -> Optional[str]:
         return None
 
     if not found_devices:
-        logging.error("対象のセンサーが見つかりませんでした。センサーの電源やPCのBluetooth設定、距離を確認してください。")
+        logging.error("対象のセンサーが見つかりませんでした。")
         return None
 
     devices_list = list(found_devices.items())
@@ -73,30 +61,65 @@ async def scan_and_select_sensor() -> Optional[str]:
             choice_index = int(choice) - 1
             if 0 <= choice_index < len(devices_list):
                 selected_address = devices_list[choice_index][0]
-                logging.info(f"センサー {selected_address} が選択されました。")
                 return selected_address
-            else:
-                print("リストにない番号です。")
         except (ValueError, IndexError):
             print("正しい番号を半角数字で入力してください。")
         except (EOFError, KeyboardInterrupt):
             logging.warning("センサー選択がキャンセルされました。")
             return None
 
+# ▼▼▼ ここから下がご指摘のあった、堅牢なデータ処理部分です ▼▼▼
+
+# データ解析で使用するバイト定数
+START_MARKER = b'N:'
+SEPARATOR = b':'
+END_MARKER = b'\r'
+
 def handle_data(sender: int, data: bytearray):
-    """BLEデータ受信時のコールバック関数（データ解析部）"""
+    """
+    BLEデータ受信時のコールバック関数（割り込みスレッドでの動作を想定）
+    例外を極力発生させず、不正なデータは単に無視する堅牢な実装。
+    """
     global latest_angles, new_data_available
+
     try:
-        text_data = data.decode("utf-8")
-        if text_data.startswith("N:"):
-            parts = text_data[2:].split(':')
-            if len(parts) == 2:
-                # .strip()で数値前後の空白や改行コードを安全に削除してから変換
-                latest_angles["y"] = int(parts[0].strip()) / 100.0
-                latest_angles["x"] = int(parts[1].strip()) / 100.0
-                new_data_available.set() # 新しいデータがあることを他の処理に通知
+        # 1. 開始マーカー 'N:' の位置を探す (データずれに対応)
+        start_index = data.find(START_MARKER)
+        if start_index == -1:
+            return  # マーカーが見つからなければ、処理せず抜ける
+
+        # 2. Y軸とX軸を区切る2番目の ':' の位置を探す
+        separator_index = data.find(SEPARATOR, start_index + len(START_MARKER))
+        if separator_index == -1:
+            return  # 2番目の区切り文字がなければ不正な形式。処理せず抜ける
+
+        # 3. 終端マーカー '\r' の位置を探す
+        end_index = data.find(END_MARKER, separator_index + 1)
+        if end_index == -1:
+            return  # 終端マーカーがなければ不正な形式。処理せず抜ける
+
+        # 4. バイト配列からY軸とX軸のデータをスライスで切り出す
+        y_bytes = data[start_index + len(START_MARKER) : separator_index]
+        x_bytes = data[separator_index + 1 : end_index]
+        
+        # 5. バイト配列を直接整数に変換。
+        y_val = int(y_bytes)
+        x_val = int(x_bytes)
+
+        # 6. 正常に変換できた場合のみ、グローバル変数を更新
+        latest_angles["y"] = y_val / 100.0
+        latest_angles["x"] = x_val / 100.0
+        new_data_available.set()
+
+    except ValueError:
+        # int()変換に失敗した場合。不正なデータとして静かに処理を終了。
+        return
     except Exception as e:
-        logging.warning(f"データ処理エラー: {e} - 受信データ: {data}")
+        # 想定外の重大なエラーが発生した場合のみログに残す
+        logging.error(f"handle_dataで予期せぬ重大なエラー: {e} - データ: {data}")
+        return
+
+# ▲▲▲ ここまでが堅牢なデータ処理部分です ▲▲▲
 
 async def send_data_to_clients():
     """最新の角度データを接続中の全WebSocketクライアントに送信し続ける"""
@@ -106,7 +129,6 @@ async def send_data_to_clients():
         
         if connected_clients:
             json_data = json.dumps(latest_angles)
-            # 接続が切れたクライアントがいてもエラーで止まらないように並列送信
             tasks = [client.send(json_data) for client in connected_clients]
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -115,14 +137,13 @@ async def websocket_handler(websocket: websockets.WebSocketServerProtocol):
     logging.info(f"Webページ接続: {websocket.remote_address}")
     connected_clients.add(websocket)
     try:
-        # 接続が閉じるのを待つ (websockets v10+ のモダンな書き方)
         await websocket.wait_closed()
     finally:
         logging.info(f"Webページ切断: {websocket.remote_address}")
         connected_clients.remove(websocket)
 
 async def ble_connect_and_notify(sensor_address: str):
-    """指定されたBLEデバイスに接続し、データ通知を開始・維持する（自動再接続付き）"""
+    """指定されたBLEデバイスに接続し、データ通知を開始・維持する"""
     global latest_angles
     latest_angles["id"] = sensor_address
     
@@ -133,7 +154,6 @@ async def ble_connect_and_notify(sensor_address: str):
                     logging.info(f"センサー ({client.address}) に接続成功！")
                     await client.start_notify(DATA_UUID, handle_data)
                     logging.info("データ受信待機中...")
-                    # 接続が切れるのを待つ (bleakのモダンな書き方)
                     await client.disconnected_future
         except Exception as e:
             logging.error(f"BLE処理エラー: {e}")
@@ -143,7 +163,6 @@ async def ble_connect_and_notify(sensor_address: str):
 
 async def main():
     """プログラム全体のエントリーポイント"""
-    # Windowsで発生することがあるasyncioのエラーを回避
     if sys.platform == "win32" and sys.version_info >= (3, 8):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
@@ -152,7 +171,6 @@ async def main():
         logging.critical("センサーが選択されなかったのでプログラムを終了します。")
         return
 
-    # WebSocketサーバー、BLE接続、データ送信処理を並行して実行
     server_task = websockets.serve(websocket_handler, WEBSOCKET_HOST, WEBSOCKET_PORT)
     logging.info(f"WebSocketサーバーを ws://{WEBSOCKET_HOST}:{WEBSOCKET_PORT} で起動しました。")
     
