@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
-# Kiririセンサーブリッジプログラム (安定版)
-# 割り込み処理(handle_data)の堅牢性を最大限に高めたバージョン
+# Kiririセンサーブリッジプログラム (最終安定版)
+# - KIRIRI01/02の開始コマンド送信に対応
+# - 割り込み処理(handle_data)の堅牢性を最大限に高めたバージョン
 
 import asyncio
 import websockets
@@ -11,8 +12,9 @@ import sys
 from typing import Set, Dict, Optional, Any, List
 
 # --- 基本設定 ---
-TARGET_DEVICE_NAMES: List[str] = ["KIRIRI01", "KIRI"]
-DATA_UUID: str = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+TARGET_DEVICE_NAMES: List[str] = ["KIRIRI02", "KIRIRI01", "KIRI"] # 02を優先的に探す
+DATA_UUID: str = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"      # データ受信(Notify)用
+RX_UUID: str = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"      # コマンド送信(Write)用
 WEBSOCKET_HOST: str = "localhost"
 WEBSOCKET_PORT: int = 8765
 RECONNECT_DELAY: float = 5.0
@@ -81,40 +83,28 @@ def handle_data(sender: int, data: bytearray):
     global latest_angles, new_data_available
 
     try:
-        # 1. 開始マーカー 'N:' を探す
         start_index = data.find(START_MARKER)
-        if start_index == -1:
-            return  # 見つからなければ処理せず抜ける
+        if start_index == -1: return
 
-        # 2. 2番目の ':' を探す
         separator_index = data.find(SEPARATOR, start_index + len(START_MARKER))
-        if separator_index == -1:
-            return  # 見つからなければ処理せず抜ける
+        if separator_index == -1: return
 
-        # 3. 終端マーカー '\r' を探す
         end_index = data.find(END_MARKER, separator_index + 1)
-        if end_index == -1:
-            return  # 見つからなければ処理せず抜ける
+        if end_index == -1: return
         
-        # 4. データを切り出す
         y_bytes = data[start_index + len(START_MARKER) : separator_index]
         x_bytes = data[separator_index + 1 : end_index]
         
-        # 5. 整数に変換する
         y_val = int(y_bytes)
         x_val = int(x_bytes)
 
-        # 6. 正常に処理できた場合のみ、値を更新する
         latest_angles["y"] = y_val / 100.0
         latest_angles["x"] = x_val / 100.0
         new_data_available.set()
 
     except ValueError:
-        # 整数への変換に失敗した場合 (例: データに文字が混ざっていた)
-        # 何もせず、静かに処理を抜ける
         return
     except Exception as e:
-        # その他の予期せぬ重大なエラーが発生した場合
         logging.error(f"handle_dataで予期せぬ重大なエラー: {e}")
         return
 
@@ -149,6 +139,19 @@ async def ble_connect_and_notify(sensor_address: str):
             async with BleakClient(sensor_address) as client:
                 if client.is_connected:
                     logging.info(f"センサー ({client.address}) に接続成功！")
+
+                    # KIRIRI01/02の場合、開始コマンドを送信する
+                    device_name = client.name if hasattr(client, 'name') else ""
+                    if "KIRIRI01" in device_name or "KIRIRI02" in device_name:
+                        logging.info(f"{device_name} のため、開始コマンドを送信します。")
+                        try:
+                            start_command = b'START\n'
+                            await client.write_gatt_char(RX_UUID, start_command)
+                            logging.info("開始コマンド送信成功。")
+                            await asyncio.sleep(0.5)
+                        except Exception as e:
+                            logging.error(f"開始コマンドの送信に失敗しました: {e}")
+
                     await client.start_notify(DATA_UUID, handle_data)
                     logging.info("データ受信待機中...")
                     await client.disconnected_future
