@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-# Kiririセンサーブリッジプログラム (最終安定版)
-# - デバイスへのコマンド送信機能を完全に無効化
-# - 割り込み処理(handle_data)の堅牢性を最重要視
+# Kiririセンサーブリッジプログラム (最終版)
+# - 全てのデバイスに対し、コマンド送信を完全に無効化
+# - 割り込み処理の堅牢性を最重要視
 
 import asyncio
 import websockets
@@ -14,7 +14,6 @@ from typing import Set, Dict, Optional, Any, List
 # --- 基本設定 ---
 TARGET_DEVICE_NAMES: List[str] = ["KIRIRI02", "KIRIRI01", "KIRI"]
 DATA_UUID: str = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
-# RX_UUID: str = "6e400002-b5a3-f393-e0a9-e50e24dcca9e" # コマンド送信しないため不要
 WEBSOCKET_HOST: str = "localhost"
 WEBSOCKET_PORT: int = 8765
 RECONNECT_DELAY: float = 5.0
@@ -81,20 +80,14 @@ def handle_data(sender: int, data: bytearray):
     """
     global latest_angles, new_data_available
 
-    try:
-        start_pos = data.index(START_MARKER)
-    except ValueError:
-        return
+    start_pos = data.find(START_MARKER)
+    if start_pos == -1: return
 
-    try:
-        separator_pos = data.index(SEPARATOR, start_pos + 2)
-    except ValueError:
-        return
+    separator_pos = data.find(SEPARATOR, start_pos + 2)
+    if separator_pos == -1: return
 
-    try:
-        end_pos = data.index(END_MARKER, separator_pos + 1)
-    except ValueError:
-        return
+    end_pos = data.find(END_MARKER, separator_pos + 1)
+    if end_pos == -1: return
 
     y_bytes = data[start_pos + 2 : separator_pos]
     x_bytes = data[separator_pos + 1 : end_pos]
@@ -159,4 +152,22 @@ async def main():
     if sys.platform == "win32" and sys.version_info >= (3, 8):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
-    selected
+    selected_address = await scan_and_select_sensor()
+    if not selected_address:
+        logging.critical("センサーが選択されなかったのでプログラムを終了します。")
+        return
+
+    server_task = websockets.serve(websocket_handler, WEBSOCKET_HOST, WEBSOCKET_PORT)
+    logging.info(f"WebSocketサーバーを ws://{WEBSOCKET_HOST}:{WEBSOCKET_PORT} で起動しました。")
+    
+    await asyncio.gather(
+        server_task,
+        ble_connect_and_notify(selected_address),
+        send_data_to_clients()
+    )
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("プログラムがユーザーによって中断されました (Ctrl+C)。")
