@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # Kiririセンサーブリッジプログラム (最終安定版)
-# - KIRIRI01/02の開始コマンド送信に対応
-# - 割り込み処理(handle_data)の堅牢性を最重要視し、例外発生を根絶
+# - デバイスへのコマンド送信機能を完全に無効化
+# - 割り込み処理(handle_data)の堅牢性を最重要視
 
 import asyncio
 import websockets
@@ -14,7 +14,7 @@ from typing import Set, Dict, Optional, Any, List
 # --- 基本設定 ---
 TARGET_DEVICE_NAMES: List[str] = ["KIRIRI02", "KIRIRI01", "KIRI"]
 DATA_UUID: str = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
-RX_UUID: str = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+# RX_UUID: str = "6e400002-b5a3-f393-e0a9-e50e24dcca9e" # コマンド送信しないため不要
 WEBSOCKET_HOST: str = "localhost"
 WEBSOCKET_PORT: int = 8765
 RECONNECT_DELAY: float = 5.0
@@ -72,48 +72,39 @@ async def scan_and_select_sensor() -> Optional[str]:
 
 # データ解析で使用するバイト定数
 START_MARKER = b'N:'
-SEPARATOR = ord(':')  # バイト値として取得
+SEPARATOR = ord(':')
 END_MARKER = ord('\r')
 
 def handle_data(sender: int, data: bytearray):
     """
     受信したBLEデータを解析する関数。例外を発生させないことを最優先とする。
-    データが不正な場合は、何もせずに関数を終了する。
     """
     global latest_angles, new_data_available
 
-    # 1. 開始マーカー 'N:' を探す
     try:
         start_pos = data.index(START_MARKER)
     except ValueError:
-        return  # マーカーがなければ処理を終了
+        return
 
-    # 2. 2番目の ':' を探す
     try:
-        # 開始マーカーの直後から検索
         separator_pos = data.index(SEPARATOR, start_pos + 2)
     except ValueError:
-        return  # 区切りがなければ処理を終了
+        return
 
-    # 3. 終端マーカー '\r' を探す
     try:
-        # 区切り文字の直後から検索
         end_pos = data.index(END_MARKER, separator_pos + 1)
     except ValueError:
-        return  # 終端がなければ処理を終了
+        return
 
-    # 4. データを切り出す
     y_bytes = data[start_pos + 2 : separator_pos]
     x_bytes = data[separator_pos + 1 : end_pos]
 
-    # 5. 整数に変換
     try:
         y_val = int(y_bytes)
         x_val = int(x_bytes)
     except ValueError:
-        return  # 数値でなければ処理を終了
+        return
 
-    # 6. 全てのチェックを通過した場合のみ値を更新
     latest_angles["y"] = y_val / 100.0
     latest_angles["x"] = x_val / 100.0
     new_data_available.set()
@@ -151,14 +142,8 @@ async def ble_connect_and_notify(sensor_address: str):
                 if client.is_connected:
                     logging.info(f"センサー ({client.address}) に接続成功！")
 
-                    device_name = client.name if hasattr(client, 'name') else ""
-                    if "KIRIRI01" in device_name or "KIRIRI02" in device_name:
-                        logging.info(f"{device_name} のため、開始コマンドを送信します。")
-                        try:
-                            logging.info("開始コマンド送信成功。")
-                            await asyncio.sleep(0.5)
-                        except Exception as e:
-                            logging.error(f"開始コマンドの送信に失敗しました: {e}")
+                    # ▼▼▼ コマンド送信処理を完全に削除 ▼▼▼
+                    # これにより、どのデバイスに対しても何も送信しない
 
                     await client.start_notify(DATA_UUID, handle_data)
                     logging.info("データ受信待機中...")
@@ -174,22 +159,4 @@ async def main():
     if sys.platform == "win32" and sys.version_info >= (3, 8):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
-    selected_address = await scan_and_select_sensor()
-    if not selected_address:
-        logging.critical("センサーが選択されなかったのでプログラムを終了します。")
-        return
-
-    server_task = websockets.serve(websocket_handler, WEBSOCKET_HOST, WEBSOCKET_PORT)
-    logging.info(f"WebSocketサーバーを ws://{WEBSOCKET_HOST}:{WEBSOCKET_PORT} で起動しました。")
-    
-    await asyncio.gather(
-        server_task,
-        ble_connect_and_notify(selected_address),
-        send_data_to_clients()
-    )
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("プログラムがユーザーによって中断されました (Ctrl+C)。")
+    selected
