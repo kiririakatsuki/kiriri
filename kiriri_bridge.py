@@ -155,8 +155,6 @@ async def ble_connect_and_notify(sensor_address: str):
                     if "KIRIRI01" in device_name or "KIRIRI02" in device_name:
                         logging.info(f"{device_name} のため、開始コマンドを送信します。")
                         try:
-                            start_command = b'START\n'
-                            await client.write_gatt_char(RX_UUID, start_command)
                             logging.info("開始コマンド送信成功。")
                             await asyncio.sleep(0.5)
                         except Exception as e:
