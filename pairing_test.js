@@ -7,7 +7,7 @@
 const KIRIRI_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const RX_CHARACTERISTIC_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Write用
 const TX_CHARACTERISTIC_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Notify用
-const SUPPORTED_DEVICE_NAMES = ['KIRIRI01', 'KIRI', 'KIRIRI02']; // KIRIRI02を追加
+const SUPPORTED_DEVICE_NAMES = ['KIRIRI01', 'KIRI', 'KIRIRI02'];
 const MAX_CHART_POINTS = 120; // グラフに表示する最大データ点数 (2分)
 
 // --- HTML要素の参照 ---
@@ -179,10 +179,6 @@ function updateAngleValues(y, x) {
 
 
 // --- WebSocket関連の関数 ---
-
-/**
- * WebSocketサーバーに接続します。
- */
 async function connectWebSocket() {
     const url = wsUrlInput.value;
     if (!url) {
@@ -193,14 +189,12 @@ async function connectWebSocket() {
 
     try {
         webSocket = new WebSocket(url);
-
-        webSocket.onopen = (event) => {
+        webSocket.onopen = () => {
             isConnected = true;
             logStatus("WebSocketサーバーに接続しました。", 'success');
             updateMessageDisplay("接続成功！「A. 今の姿勢を覚える」で基準を設定してください。", "success");
             updateButtonStates();
         };
-
         webSocket.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
@@ -214,17 +208,14 @@ async function connectWebSocket() {
                 logStatus(`WebSocketデータ処理エラー: ${e.message}`, 'error');
             }
         };
-
-        webSocket.onclose = (event) => {
+        webSocket.onclose = () => {
             logStatus("WebSocket接続が切れました。", 'warning');
             handleDisconnect();
         };
-
-        webSocket.onerror = (error) => {
+        webSocket.onerror = () => {
             logStatus(`WebSocketエラー: 接続に失敗しました。URLやPythonブリッジの状態を確認してください。`, 'error');
             handleDisconnect();
         };
-
     } catch (e) {
         logStatus(`WebSocket接続の開始に失敗しました: ${e.message}`, 'error');
         updateButtonStates();
@@ -233,13 +224,8 @@ async function connectWebSocket() {
 
 
 // --- Web Bluetooth (BLE) 関連の関数 ---
-
-/**
- * BLEデバイスに接続し、サービスの検索、通知のセットアップを行います。
- */
 async function connectBLE() {
     logStatus('Kiririセンサーを探しています...', 'info');
-
     try {
         logStatus(`ブラウザのダイアログで「${SUPPORTED_DEVICE_NAMES.join(' or ')}」を選んでください...`, 'info');
         bleDevice = await navigator.bluetooth.requestDevice({
@@ -249,7 +235,6 @@ async function connectBLE() {
 
         const deviceName = bleDevice.name || bleDevice.id;
         logStatus(`デバイス選択: ${deviceName}`, 'info');
-        
         bleDevice.addEventListener('gattserverdisconnected', handleDisconnect);
 
         logStatus('GATTサーバーに接続しています...', 'info');
@@ -269,7 +254,6 @@ async function connectBLE() {
         if (sensorIdDisplay) sensorIdDisplay.textContent = deviceName;
         logStatus('接続完了！データ受信待機中...', 'success');
         updateMessageDisplay("接続成功！「A. 今の姿勢を覚える」で基準を設定してください。", "success");
-
     } catch (error) {
         logStatus(`BLE接続エラー: ${error.message}`, 'error');
         console.error("BLE Connection Error:", error);
@@ -279,42 +263,23 @@ async function connectBLE() {
     }
 }
 
-/**
- * BLEデバイスからのデータ通知を堅牢に処理します。
- * @param {Event} event - characteristicvaluechangedイベント
- */
 function handleBleData(event) {
-    const value = event.target.value; // DataViewオブジェクト
+    const value = event.target.value;
     if (!value) return;
-
     try {
         const textDecoder = new TextDecoder('utf-8');
         const receivedText = textDecoder.decode(value);
-
         const startIndex = receivedText.indexOf('N:');
-        if (startIndex === -1) {
-            return;
-        }
-
+        if (startIndex === -1) return;
         const dataPart = receivedText.substring(startIndex + 2);
-
         const separatorIndex = dataPart.indexOf(':');
-        if (separatorIndex === -1) {
-            return;
-        }
-
+        if (separatorIndex === -1) return;
         const yStr = dataPart.substring(0, separatorIndex);
         const xStr = dataPart.substring(separatorIndex + 1);
-
         const yRaw = parseInt(yStr, 10);
         const xRaw = parseInt(xStr, 10);
-
-        if (isNaN(yRaw) || isNaN(xRaw)) {
-            return;
-        }
-
+        if (isNaN(yRaw) || isNaN(xRaw)) return;
         updateAngleValues(yRaw / 100.0, xRaw / 100.0);
-
     } catch (error) {
         logStatus(`BLEデータ処理の例外: ${error.message}`, 'error');
     }
@@ -322,10 +287,6 @@ function handleBleData(event) {
 
 
 // --- 接続・切断の共通処理 ---
-
-/**
- * 接続ボタンが押された時の処理。選択中のモードに応じて処理を振り分けます。
- */
 async function handleConnect() {
     connectButton.disabled = true;
     if (connectionMode === 'ble') {
@@ -335,18 +296,13 @@ async function handleConnect() {
     }
 }
 
-/**
- * 切断処理。BLEとWebSocketの両方に対応します。
- */
 async function handleDisconnect() {
     logStatus('切断処理を実行しています...', 'info');
-
     if (webSocket) {
         webSocket.onclose = null;
         webSocket.close();
         webSocket = null;
     }
-
     if (bleDevice) {
         bleDevice.removeEventListener('gattserverdisconnected', handleDisconnect);
         if (bleDevice.gatt && bleDevice.gatt.connected) {
@@ -359,7 +315,6 @@ async function handleDisconnect() {
         }
         bleDevice = null;
     }
-
     isConnected = false;
     isMeasuring = false;
     isFeedbackActive = false;
@@ -370,17 +325,15 @@ async function handleDisconnect() {
     xAngleDisplay.textContent = '---';
     refYDisplay.textContent = '---';
     refXDisplay.textContent = '---';
-
     chartTimestamps = [];
     chartYData = [];
     chartXData = [];
     if (myPostureChart) {
-        myPostureChart.data.labels = chartTimestamps;
-        myPostureChart.data.datasets[0].data = chartYData;
-        myPostureChart.data.datasets[1].data = chartXData;
+        myPostureChart.data.labels = [];
+        myPostureChart.data.datasets[0].data = [];
+        myPostureChart.data.datasets[1].data = [];
         myPostureChart.update('none');
     }
-    
     updateMessageDisplay("切断されました。再度接続してください。", "warning");
     logStatus("ページの準備ができました。接続モードを選んでください。", 'info');
     updateButtonStates();
@@ -388,10 +341,6 @@ async function handleDisconnect() {
 
 
 // --- 計測とフィードバック ---
-
-/**
- * 現在の姿勢を基準として記憶します。
- */
 function calibratePosture() {
     if (!isConnected || isMeasuring) return;
     referenceY = currentY;
@@ -403,9 +352,6 @@ function calibratePosture() {
     updateButtonStates();
 }
 
-/**
- * 姿勢の計測を開始します。
- */
 function startMeasurement() {
     if (!isConnected || isMeasuring || referenceY === null) {
         if (referenceY === null) {
@@ -415,23 +361,18 @@ function startMeasurement() {
     }
     isMeasuring = true;
     isFeedbackActive = false;
-    
     chartTimestamps = [];
     chartYData = [];
     chartXData = [];
     if (myPostureChart) {
-        myPostureChart.data.labels = chartTimestamps;
-        myPostureChart.data.datasets[0].data = chartYData;
-        myPostureChart.data.datasets[1].data = chartXData;
+        myPostureChart.data.labels = [];
+        myPostureChart.data.datasets[0].data = [];
+        myPostureChart.data.datasets[1].data = [];
     }
-    
     updateMessageDisplay("計測中... 必要なら「フィードバック ON」を押してください。", "info");
     updateButtonStates();
 }
 
-/**
- * 計測を終了し、結果をエクスポートします。
- */
 function endMeasurement() {
     if (!isConnected || !isMeasuring) return;
     isMeasuring = false;
@@ -441,34 +382,25 @@ function endMeasurement() {
     exportDataAsCsv();
 }
 
-/**
- * 計測データをCSV形式でコンソールに出力します。
- */
 function exportDataAsCsv() {
     if (chartTimestamps.length === 0) {
         console.log("エクスポートするデータがありません。");
         return;
     }
-
     let csvContent = "Timestamp,Y_Angle,X_Angle\n";
     for (let i = 0; i < chartTimestamps.length; i++) {
         csvContent += `${chartTimestamps[i]},${chartYData[i].toFixed(4)},${chartXData[i].toFixed(4)}\n`;
     }
-
     console.log("--- 計測データ (CSV) ---");
     console.log(csvContent);
     console.log("------------------------");
     updateMessageDisplay("計測終了。データがコンソールに出力されました。", "success");
 }
 
-/**
- * 姿勢をチェックし、フィードバックメッセージを表示します。
- */
 function checkPosture(y, x) {
     if (referenceY === null) return;
     const diffY = y - referenceY;
     const diffX = x - referenceX;
-
     if (Math.abs(diffY) < 5 && Math.abs(diffX) < 3) {
          updateMessageDisplay("良い姿勢です！", "success");
     } else {
@@ -478,15 +410,10 @@ function checkPosture(y, x) {
 
 
 // --- 初期化とイベントリスナー設定 ---
-
-/**
- * ページの読み込みが完了したときに実行されるメインの処理です。
- */
 document.addEventListener('DOMContentLoaded', () => {
     // 必須要素が揃っているか最初にチェック
     if (!connectModeSelect || !connectButton || !disconnectButton) {
         console.error("致命的なエラー: 基本的な接続ボタンが見つかりません。HTMLのIDを確認してください。");
-        // ユーザーに分かりやすいエラーをページ上に表示
         const body = document.querySelector('body');
         if (body) {
             body.innerHTML = '<h1 style="color:red; text-align:center; margin-top: 50px;">ページの初期化に失敗しました。<br>HTMLファイルが破損している可能性があります。</h1>';
