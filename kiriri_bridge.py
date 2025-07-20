@@ -31,7 +31,6 @@ SCAN_TIMEOUT: float = 10.0
 # --- ログ設定 ---
 def setup_logging():
     """ログ設定を初期化する関数"""
-    # (この部分は変更ありません)
     log_dir = "logs"
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
@@ -79,7 +78,6 @@ async def scan_and_select_sensor() -> Optional[str]:
         return None
 
     devices_list = list(found_devices.items())
-    # 1台しか見つからなかった場合は自動で選択
     if len(devices_list) == 1:
         selected_address = devices_list[0][0]
         logging.info(f"センサーが1台見つかりました。自動的に接続します: {devices_list[0][1]}")
@@ -136,7 +134,7 @@ async def send_data_to_clients():
             await asyncio.gather(*tasks, return_exceptions=True)
 
 async def websocket_handler(websocket: websockets.WebSocketServerProtocol):
-    """新しいWebSocketクライント接続を管理する"""
+    """新しいWebSocketクライアント接続を管理する"""
     logging.info(f"Webページ接続: {websocket.remote_address}")
     connected_clients.add(websocket)
     try:
@@ -154,6 +152,7 @@ async def ble_connect_and_notify(sensor_address: str):
             async with BleakClient(sensor_address) as client:
                 if client.is_connected:
                     logging.info(f"センサー ({client.address}) に接続成功！")
+                    logging.info("コネクションを出しました。") # <-- ログを追加
                     device_name = client.name if hasattr(client, 'name') else ""
                     if "KIRIRI01" in device_name or "KIRIRI02" in device_name:
                         logging.info(f"{device_name} のため、開始コマンドを送信します。")
