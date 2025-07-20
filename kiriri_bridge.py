@@ -3,6 +3,7 @@
 # Kiririセンサーブリッジプログラム (最終安定版)
 # - KIRIRI01/02の開始コマンド送信に対応
 # - 割り込み処理(handle_data)の堅牢性を最重要視し、例外発生を根絶
+# - ファイルへのログ出力、ログローテーション機能を追加
 
 import asyncio
 import websockets
@@ -11,6 +12,8 @@ from bleak import BleakScanner, BleakClient, BleakError
 import logging
 import sys
 from typing import Set, Dict, Optional, Any, List
+import os
+from logging.handlers import TimedRotatingFileHandler
 
 # --- 基本設定 ---
 TARGET_DEVICE_NAMES: List[str] = ["KIRIRI02", "KIRIRI01", "KIRI"]
@@ -23,11 +26,40 @@ SCAN_TIMEOUT: float = 10.0
 # ----------------
 
 # --- ログ設定 ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] (%(funcName)s) %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+def setup_logging():
+    """ログ設定を初期化する関数"""
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+
+    log_file_path = os.path.join(log_dir, "sensor_bridge.log")
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    formatter = logging.Formatter(
+        '%(asctime)s [%(levelname)s] (%(funcName)s) %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    # コンソール出力用
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+        logger.addHandler(console_handler)
+
+    # ファイル出力用 (日ごとにローテーション)
+    file_handler = TimedRotatingFileHandler(
+        log_file_path,
+        when='D',
+        interval=1,
+        backupCount=30,
+        encoding='utf-8'
+    )
+    file_handler.setFormatter(formatter)
+    if not any(isinstance(h, TimedRotatingFileHandler) for h in logger.handlers):
+        logger.addHandler(file_handler)
+
 
 # --- グローバル変数 ---
 latest_angles: Dict[str, Optional[Any]] = {"id": None, "y": 0.0, "x": 0.0}
@@ -79,45 +111,29 @@ END_MARKER = ord('\r')
 def handle_data(sender: int, data: bytearray):
     """
     受信したBLEデータを解析する関数。例外を発生させないことを最優先とする。
-    データが不正な場合は、何もせずに関数を終了する。
     """
     global latest_angles, new_data_available
 
-    # 1. 開始マーカー 'N:' を探す
     try:
         start_pos = data.index(START_MARKER)
-    except ValueError:
-        return  # マーカーがなければ処理を終了
-
-    # 2. 2番目の ':' を探す
-    try:
-        # 開始マーカーの直後から検索
         separator_pos = data.index(SEPARATOR, start_pos + 2)
-    except ValueError:
-        return  # 区切りがなければ処理を終了
-
-    # 3. 終端マーカー '\r' を探す
-    try:
-        # 区切り文字の直後から検索
         end_pos = data.index(END_MARKER, separator_pos + 1)
-    except ValueError:
-        return  # 終端がなければ処理を終了
+        
+        y_bytes = data[start_pos + 2 : separator_pos]
+        x_bytes = data[separator_pos + 1 : end_pos]
 
-    # 4. データを切り出す
-    y_bytes = data[start_pos + 2 : separator_pos]
-    x_bytes = data[separator_pos + 1 : end_pos]
-
-    # 5. 整数に変換
-    try:
         y_val = int(y_bytes)
         x_val = int(x_bytes)
-    except ValueError:
-        return  # 数値でなければ処理を終了
 
-    # 6. 全てのチェックを通過した場合のみ値を更新
-    latest_angles["y"] = y_val / 100.0
-    latest_angles["x"] = x_val / 100.0
-    new_data_available.set()
+        latest_angles["y"] = y_val / 100.0
+        latest_angles["x"] = x_val / 100.0
+        new_data_available.set()
+    except ValueError:
+        # データが不正な場合は何もしない
+        return
+    except Exception as e:
+        # 予期せぬエラーをログに残す
+        logging.error(f"ハンドルデータで予期せぬエラー: {e}, データ: {data.hex()}")
 
 async def send_data_to_clients():
     """最新の角度データを接続中の全WebSocketクライアントに送信し続ける"""
@@ -151,7 +167,10 @@ async def ble_connect_and_notify(sensor_address: str):
                 if client.is_connected:
                     logging.info(f"センサー ({client.address}) に接続成功！")
 
-                    device_name = client.name if hasattr(client, 'name') else ""
+                    device_name = ""
+                    if hasattr(client, 'name'):
+                        device_name = client.name
+                    
                     if "KIRIRI01" in device_name or "KIRIRI02" in device_name:
                         logging.info(f"{device_name} のため、開始コマンドを送信します。")
                         try:
@@ -173,6 +192,8 @@ async def ble_connect_and_notify(sensor_address: str):
 
 async def main():
     """プログラム全体のエントリーポイント"""
+    setup_logging()
+    
     if sys.platform == "win32" and sys.version_info >= (3, 8):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
@@ -181,11 +202,15 @@ async def main():
         logging.critical("センサーが選択されなかったのでプログラムを終了します。")
         return
 
-    server_task = websockets.serve(websocket_handler, WEBSOCKET_HOST, WEBSOCKET_PORT)
-    logging.info(f"WebSocketサーバーを ws://{WEBSOCKET_HOST}:{WEBSOCKET_PORT} で起動しました。")
-    
+    try:
+        server = await websockets.serve(websocket_handler, WEBSOCKET_HOST, WEBSOCKET_PORT)
+        logging.info(f"WebSocketサーバーを ws://{WEBSOCKET_HOST}:{WEBSOCKET_PORT} で起動しました。")
+    except OSError as e:
+        logging.critical(f"WebSocketサーバーの起動に失敗しました: {e}")
+        logging.critical(f"ポート {WEBSOCKET_PORT} が既に使用されている可能性があります。")
+        return
+        
     await asyncio.gather(
-        server_task,
         ble_connect_and_notify(selected_address),
         send_data_to_clients()
     )
