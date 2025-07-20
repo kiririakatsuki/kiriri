@@ -16,7 +16,7 @@ from logging.handlers import TimedRotatingFileHandler
 
 # --- 基本設定 ---
 # スキャン時に探すデバイス名
-TARGET_DEVICE_NAMES: List[str] = ["KIRIRI02", "KIRIRI01", "KIRI"]
+TARGET_DEVICE_NAMES: List[str] = ["KIRIRI02", "KIRIRI01", "KIRIRI03"]
 
 DATA_UUID: str = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 RX_UUID: str = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
@@ -152,7 +152,7 @@ async def ble_connect_and_notify(sensor_address: str):
                     logging.info(f"センサー ({client.address}) に接続成功！")
                     logging.info("コネクションを出しました。")
                     device_name = client.name if hasattr(client, 'name') else ""
-                    if "KIRIRI01" in device_name or "KIRIRI02" in device_name:
+                    if "KIRIRI01" in device_name or "KIRIRI02" in device_name or "KIRIRI03" in device_name:
                         logging.info(f"{device_name} のため、開始コマンドを送信します。")
                         try:
                             await client.write_gatt_char(RX_UUID, b'START\n')
