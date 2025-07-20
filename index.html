@@ -4,11 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kiriri姿勢チェッカー</title>
-    <!-- Content Security Policy (CSP) を追加 -->
-    <!-- 'self' は同じオリジンからのリソースを許可します。 -->
-    <!-- script-src には Chart.js が読み込まれる cdn.jsdelivr.net を追加しています。 -->
-    <!-- style-src に 'unsafe-inline' を含めるのは、HTML内に直接記述された <style> タグを許可するためです。 -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:; font-src 'self';">
     
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -64,6 +60,10 @@
             cursor: not-allowed; opacity: 0.5; background-color: #f0f0f0;
             border-color: #d0d0d0; color: #999;
         }
+        
+        select {
+            font-size: 0.9em; padding: 10px 15px; border: 1px solid #ccc; border-radius: 6px;
+        }
 
         /* データ表示エリア */
         .data-display p {
@@ -103,9 +103,11 @@
         }
         .button-group button { margin-top: 5px; }
         .button-group span { margin-left: 10px; }
+        
+        .connection-options { margin-top: 10px; }
 
         #messageDisplay {
-             padding: 10px; margin-top: 10px; border-radius: 4px; font-weight: 500; border: 1px solid transparent;
+            padding: 10px; margin-top: 10px; border-radius: 4px; font-weight: 500; border: 1px solid transparent;
         }
 
         /* 「トップへ戻る」ボタン用のスタイル */
@@ -129,121 +131,53 @@
             font-size: 0.8em; 
         }
 
-        /* ▼▼▼ ステップ7-1a追加スタイル ▼▼▼ */
+        /* ライブアングルダッシュボード */
         .live-angle-dashboard {
-            background-color: #fff; /* 背景色を白に */
-            border: 1px solid #e0e0e0;
-            border-radius: 10px;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.06);
-            padding: 20px;
-            margin-bottom: 20px;
-            text-align: center; /* 子要素を中央揃えに */
-            display: flex; /* 横並びにするためにflexを使用 */
-            justify-content: space-around; /* 各angle-cardを均等に配置 */
-            flex-wrap: wrap; /* 小画面で折り返すように */
+            background-color: #fff; border: 1px solid #e0e0e0; border-radius: 10px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.06); padding: 20px;
+            margin-bottom: 20px; text-align: center; display: flex;
+            justify-content: space-around; flex-wrap: wrap;
         }
-
         .angle-card {
-            display: inline-block; /* 横並びの要素として */
-            margin: 10px 15px;   /* カード間のマージン */
-            padding: 15px;
-            border-radius: 8px;
-            background-color: #f9f9f9; /* カードの背景色 */
-            min-width: 180px; /* カードの最小幅 */
+            display: inline-block; margin: 10px 15px; padding: 15px;
+            border-radius: 8px; background-color: #f9f9f9; min-width: 180px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
-
         .angle-label {
-            font-size: 1.1em;
-            color: #555;
-            margin-bottom: 5px;
+            font-size: 1.1em; color: #555; margin-bottom: 5px;
         }
-
         .angle-value {
-            font-size: 3.2em; /* PCでの基本フォントサイズ */
-            font-weight: bold;
-            color: #CC3333; /* テーマカラー */
-            line-height: 1.1;
-            margin: 5px 0;
+            font-size: 3.2em; font-weight: bold; color: #CC3333;
+            line-height: 1.1; margin: 5px 0;
         }
-
         .angle-unit {
-            font-size: 0.9em;
-            color: #777;
+            font-size: 0.9em; color: #777;
+        }
+        .chart-section h2 {
+            text-align: center; border-bottom: none; margin-bottom: 10px;
         }
 
-        .chart-section h2 { /* グラフセクションの見出しスタイル調整 */
-            text-align: center; /* 中央揃えにするなど */
-            border-bottom: none; /* 下線を消すなど */
-            margin-bottom: 10px;
-        }
-
-        /* --- タブレット向けスタイル (画面幅 1024px 以下) --- */
+        /* レスポンシブ対応 */
         @media screen and (max-width: 1024px) {
-            .live-angle-dashboard {
-                padding: 15px;
-            }
-            .angle-card {
-                min-width: 160px;
-                margin: 10px;
-            }
-            .angle-value {
-                font-size: 2.8em; /* タブレットでは少しフォントサイズを調整 */
-            }
-            .angle-label {
-                font-size: 1em;
-            }
+            .live-angle-dashboard { padding: 15px; }
+            .angle-card { min-width: 160px; margin: 10px; }
+            .angle-value { font-size: 2.8em; }
+            .angle-label { font-size: 1em; }
         }
-
-        /* --- スマートフォン向けスタイル (画面幅 767px 以下) --- */
         @media screen and (max-width: 767px) {
-            .live-angle-dashboard {
-                flex-direction: column; /* スマホでは縦積みに */
-                align-items: center;  /* 中央揃え */
-                padding: 10px;
-            }
-            .angle-card {
-                width: 90%; /* カード幅を画面に合わせる */
-                max-width: 300px; /* 最大幅は設ける */
-                min-width: 0; /* 最小幅をリセット */
-                margin: 10px 0; /* 上下マージンのみに */
-                padding: 12px;
-            }
-            .angle-value {
-                font-size: 2.5em; /* スマホでのフォントサイズ */
-            }
-            .angle-label {
-                font-size: 0.95em;
-            }
-            .angle-unit {
-                font-size: 0.85em;
-            }
-
-            /* スマホではボタンを縦積みにし、幅を広げる */
-            .button-group {
-                flex-direction: column;
-                align-items: stretch; /* ボタンを親要素の幅に広げる */
-            }
-            .button-group button {
-                width: 100%;
-                margin-right: 0;
-                margin-left: 0;
-            }
-            .button-group span { /* 基準角度表示 */
-                margin-left: 0;
-                margin-top: 8px;
-                display: block;
-                text-align: center;
-            }
-
-            /* 他の要素もスマホ向けに微調整 */
+            .live-angle-dashboard { flex-direction: column; align-items: center; padding: 10px; }
+            .angle-card { width: 90%; max-width: 300px; min-width: 0; margin: 10px 0; padding: 12px; }
+            .angle-value { font-size: 2.5em; }
+            .angle-label { font-size: 0.95em; }
+            .angle-unit { font-size: 0.85em; }
+            .button-group { flex-direction: column; align-items: stretch; }
+            .button-group button { width: 100%; margin-right: 0; margin-left: 0; }
+            .button-group span { margin-left: 0; margin-top: 8px; display: block; text-align: center; }
             h1 { font-size: 1.5em; margin-bottom: 20px; }
             h2 { font-size: 1.2em; margin-bottom: 10px; }
             .section { padding: 12px; margin-bottom: 15px; }
             .chart-container { height: 220px; }
         }
-        /* ▲▲▲ ステップ7-1a追加スタイルここまで ▲▲▲ */
-
     </style>
 </head>
 <body>
@@ -254,13 +188,32 @@
 
         <div class="section">
             <h2>1. 接続</h2>
-            <button id="pairButton">Kiririセンサーとペアリング</button>
-            <button id="disconnectButton" disabled>センサーから切断</button>
-            <div id="statusMessages" class="info" style="margin-top:10px;">ページの準備ができました。「ペアリング開始」ボタンを押してください。</div>
+            <div class="button-group">
+                <label for="connectMode">接続方法:</label>
+                <select id="connectMode">
+                    <option value="ble" selected>Web Bluetooth (直接接続)</option>
+                    <option value="ws">Pythonブリッジ経由</option>
+                </select>
+            </div>
+
+            <div id="bleOptions" class="connection-options">
+                <p>ブラウザの機能を使ってセンサーに直接接続します。</p>
+            </div>
+
+            <div id="wsOptions" class="connection-options" style="display: none;">
+                <label for="wsUrl">ブリッジURL:</label>
+                <input type="text" id="wsUrl" value="ws://localhost:8765">
+            </div>
+
+            <div class="button-group" style="margin-top: 15px;">
+                <button id="connectButton">センサーと接続</button>
+                <button id="disconnectButton" disabled>センサーから切断</button>
+            </div>
+            
+            <div id="statusMessages" class="info">ページの準備ができました。「接続」ボタンを押してください。</div>
             <p class="data-display">センサーID: <strong id="sensorIdDisplay">---</strong></p>
         </div>
 
-        <!-- ▼▼▼ HTML変更箇所: 「現在の傾き」表示を強調 ▼▼▼ -->
         <div id="liveAngleDashboard" class="section live-angle-dashboard">
             <div class="angle-card">
                 <p class="angle-label">前後 (Y軸)</p>
@@ -274,7 +227,6 @@
             </div>
         </div>
 
-        <!-- ▼▼▼ HTML変更箇所: グラフ表示エリアを独立したセクションに ▼▼▼ -->
         <div class="section chart-section">
             <h2>グラフ表示</h2>
             <div class="chart-container">
