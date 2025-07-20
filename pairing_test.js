@@ -83,6 +83,11 @@ function updateMessageDisplay(message, type = 'info') {
  * 現在の状態に応じて、各ボタンの有効/無効状態を切り替えます。
  */
 function updateButtonStates() {
+    // 必須要素が見つからない場合は何もしない
+    if (!connectButton || !disconnectButton || !calibrateButton || !startMeasurementButton || !endMeasurementButton || !feedbackOnButton || !feedbackOffButton) {
+        console.error("一部のボタン要素が見つかりません。HTMLのIDを確認してください。");
+        return;
+    }
     const isModeSelected = !!connectionMode;
     connectButton.disabled = !isModeSelected || isConnected;
     disconnectButton.disabled = !isModeSelected || !isConnected;
@@ -450,4 +455,73 @@ function exportDataAsCsv() {
         csvContent += `${chartTimestamps[i]},${chartYData[i].toFixed(4)},${chartXData[i].toFixed(4)}\n`;
     }
 
-    console
+    console.log("--- 計測データ (CSV) ---");
+    console.log(csvContent);
+    console.log("------------------------");
+    updateMessageDisplay("計測終了。データがコンソールに出力されました。", "success");
+}
+
+/**
+ * 姿勢をチェックし、フィードバックメッセージを表示します。
+ */
+function checkPosture(y, x) {
+    if (referenceY === null) return;
+    const diffY = y - referenceY;
+    const diffX = x - referenceX;
+
+    if (Math.abs(diffY) < 5 && Math.abs(diffX) < 3) {
+         updateMessageDisplay("良い姿勢です！", "success");
+    } else {
+         updateMessageDisplay("姿勢が崩れています。基準を意識しましょう。", "warning");
+    }
+}
+
+
+// --- 初期化とイベントリスナー設定 ---
+
+/**
+ * ページの読み込みが完了したときに実行されるメインの処理です。
+ */
+document.addEventListener('DOMContentLoaded', () => {
+    // 必須要素が揃っているか最初にチェック
+    if (!connectModeSelect || !connectButton || !disconnectButton) {
+        console.error("致命的なエラー: 基本的な接続ボタンが見つかりません。HTMLのIDを確認してください。");
+        // ユーザーに分かりやすいエラーをページ上に表示
+        const body = document.querySelector('body');
+        if (body) {
+            body.innerHTML = '<h1 style="color:red; text-align:center; margin-top: 50px;">ページの初期化に失敗しました。<br>HTMLファイルが破損している可能性があります。</h1>';
+        }
+        return;
+    }
+    
+    initializeChart();
+
+    connectButton.onclick = handleConnect;
+    disconnectButton.onclick = handleDisconnect;
+    calibrateButton.onclick = calibratePosture;
+    startMeasurementButton.onclick = startMeasurement;
+    endMeasurementButton.onclick = endMeasurement;
+    feedbackOnButton.onclick = () => { isFeedbackActive = true; updateButtonStates(); };
+    feedbackOffButton.onclick = () => { isFeedbackActive = false; updateButtonStates(); };
+
+    connectModeSelect.addEventListener('change', (event) => {
+        connectionMode = event.target.value;
+        if (connectionMode === 'ble') {
+            bleOptions.style.display = 'block';
+            wsOptions.style.display = 'none';
+        } else {
+            bleOptions.style.display = 'none';
+            wsOptions.style.display = 'block';
+        }
+        updateButtonStates();
+    });
+
+    if (scrollTopButton) {
+        window.onscroll = () => {
+            scrollTopButton.style.display = (document.body.scrollTop > 100 || document.documentElement.scrollTop > 100) ? "block" : "none";
+        };
+        scrollTopButton.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    handleDisconnect();
+});
