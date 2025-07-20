@@ -1,0 +1,15 @@
+# Pythonキャッシュ
+__pycache__/
+*.pyc
+
+# 仮想環境フォルダ
+venv/
+.venv/
+
+# ログファイル
+logs/
+*.log
+
+# IDE設定ファイル
+.vscode/
+.idea/
