@@ -7,7 +7,7 @@
 const KIRIRI_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const RX_CHARACTERISTIC_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Write用
 const TX_CHARACTERISTIC_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Notify用
-const SUPPORTED_DEVICE_NAMES = ['KIRIRI01', 'KIRI']; // 対応センサー名
+const SUPPORTED_DEVICE_NAMES = ['KIRIRI01', 'KIRI', 'KIRIRI02']; // KIRIRI02を追加
 const MAX_CHART_POINTS = 120; // グラフに表示する最大データ点数 (2分)
 
 // --- HTML要素の参照 ---
@@ -37,7 +37,6 @@ let bleDevice = null;
 let bleServer = null;
 let angleCharacteristic = null;
 let webSocket = null;
-let currentSensorType = null;
 let referenceY = null;
 let referenceX = null;
 let currentY = 0.0;
@@ -248,7 +247,6 @@ async function connectBLE() {
         
         bleDevice.addEventListener('gattserverdisconnected', handleDisconnect);
 
-        // 各ステップを個別のtry-catchで囲み、エラー箇所を特定しやすくする
         logStatus('GATTサーバーに接続しています...', 'info');
         bleServer = await bleDevice.gatt.connect();
         
@@ -288,38 +286,31 @@ function handleBleData(event) {
         const textDecoder = new TextDecoder('utf-8');
         const receivedText = textDecoder.decode(value);
 
-        // 'N:'で始まるか確認
         const startIndex = receivedText.indexOf('N:');
         if (startIndex === -1) {
-            return; // マーカーがなければ無視
+            return;
         }
 
-        // 'N:'以降の文字列を対象にする
         const dataPart = receivedText.substring(startIndex + 2);
 
-        // 2番目の':'を探す
         const separatorIndex = dataPart.indexOf(':');
         if (separatorIndex === -1) {
-            return; // 区切り文字がなければ無視
+            return;
         }
 
-        // データを分割
         const yStr = dataPart.substring(0, separatorIndex);
         const xStr = dataPart.substring(separatorIndex + 1);
 
-        // 数値に変換
         const yRaw = parseInt(yStr, 10);
         const xRaw = parseInt(xStr, 10);
 
-        // 数値でなければNaNになるので、それをチェック
         if (isNaN(yRaw) || isNaN(xRaw)) {
-            return; // 数値変換に失敗したら無視
+            return;
         }
 
         updateAngleValues(yRaw / 100.0, xRaw / 100.0);
 
     } catch (error) {
-        // 基本的に上のチェックで防がれるが、念のため
         logStatus(`BLEデータ処理の例外: ${error.message}`, 'error');
     }
 }
@@ -331,7 +322,7 @@ function handleBleData(event) {
  * 接続ボタンが押された時の処理。選択中のモードに応じて処理を振り分けます。
  */
 async function handleConnect() {
-    connectButton.disabled = true; // 処理中にボタンを無効化
+    connectButton.disabled = true;
     if (connectionMode === 'ble') {
         await connectBLE();
     } else if (connectionMode === 'ws') {
@@ -459,62 +450,4 @@ function exportDataAsCsv() {
         csvContent += `${chartTimestamps[i]},${chartYData[i].toFixed(4)},${chartXData[i].toFixed(4)}\n`;
     }
 
-    console.log("--- 計測データ (CSV) ---");
-    console.log(csvContent);
-    console.log("------------------------");
-    updateMessageDisplay("計測終了。データがコンソールに出力されました。", "success");
-}
-
-/**
- * 姿勢をチェックし、フィードバックメッセージを表示します。
- */
-function checkPosture(y, x) {
-    if (referenceY === null) return;
-    const diffY = y - referenceY;
-    const diffX = x - referenceX;
-    // ... 閾値に基づいたメッセージ表示ロジック ...
-    if (Math.abs(diffY) < 5 && Math.abs(diffX) < 3) {
-         updateMessageDisplay("良い姿勢です！", "success");
-    } else {
-         updateMessageDisplay("姿勢が崩れています。基準を意識しましょう。", "warning");
-    }
-}
-
-
-// --- 初期化とイベントリスナー設定 ---
-
-/**
- * ページの読み込みが完了したときに実行されるメインの処理です。
- */
-document.addEventListener('DOMContentLoaded', () => {
-    initializeChart();
-
-    connectButton.onclick = handleConnect;
-    disconnectButton.onclick = handleDisconnect;
-    calibrateButton.onclick = calibratePosture;
-    startMeasurementButton.onclick = startMeasurement;
-    endMeasurementButton.onclick = endMeasurement;
-    feedbackOnButton.onclick = () => { isFeedbackActive = true; updateButtonStates(); };
-    feedbackOffButton.onclick = () => { isFeedbackActive = false; updateButtonStates(); };
-
-    connectModeSelect.addEventListener('change', (event) => {
-        connectionMode = event.target.value;
-        if (connectionMode === 'ble') {
-            bleOptions.style.display = 'block';
-            wsOptions.style.display = 'none';
-        } else {
-            bleOptions.style.display = 'none';
-            wsOptions.style.display = 'block';
-        }
-        updateButtonStates();
-    });
-
-    if (scrollTopButton) {
-        window.onscroll = () => {
-            scrollTopButton.style.display = (document.body.scrollTop > 100 || document.documentElement.scrollTop > 100) ? "block" : "none";
-        };
-        scrollTopButton.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-
-    handleDisconnect();
-});
+    console
