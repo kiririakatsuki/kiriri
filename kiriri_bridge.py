@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
-# Kiririセンサーブリッジプログラム (ハイブリッド版)
-# - まずMACアドレス直結を試み、失敗したらスキャンに切り替えます。
+# Kiririセンサーブリッジプログラム (スキャン＆セレクト版)
+# - 起動時に毎回センサーをスキャンし、ユーザーが接続先を選択します。
 # - ログ機能、自動再接続機能を搭載
 
 import asyncio
@@ -15,8 +15,6 @@ import os
 from logging.handlers import TimedRotatingFileHandler
 
 # --- 基本設定 ---
-# 優先的に接続を試みるMACアドレス（不明な場合は空欄でもOK）
-TARGET_MAC_ADDRESS: str = "EE:3C:71:89:4E:E5"  # <-- 接続したいセンサーのMACアドレス
 # スキャン時に探すデバイス名
 TARGET_DEVICE_NAMES: List[str] = ["KIRIRI02", "KIRIRI01", "KIRI"]
 
@@ -175,21 +173,8 @@ async def main():
     if sys.platform == "win32" and sys.version_info >= (3, 8):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
-    selected_address = None
-    # 1. まずMACアドレスで直接接続を試みる
-    if TARGET_MAC_ADDRESS:
-        logging.info(f"MACアドレス {TARGET_MAC_ADDRESS} に直接接続を試みます...")
-        try:
-            async with asyncio.wait_for(BleakClient(TARGET_MAC_ADDRESS), timeout=5.0) as client:
-                if client.is_connected:
-                    selected_address = TARGET_MAC_ADDRESS
-                    logging.info("直接接続に成功しました。")
-        except Exception:
-            logging.warning("直接接続に失敗しました。スキャンモードに切り替えます。")
-
-    # 2. 直接接続に失敗した場合、スキャンを行う
-    if not selected_address:
-        selected_address = await scan_and_select_sensor()
+    # 常にスキャンしてユーザーに接続先を選択させる
+    selected_address = await scan_and_select_sensor()
 
     if not selected_address:
         logging.critical("センサーが選択されなかったのでプログラムを終了します。")
