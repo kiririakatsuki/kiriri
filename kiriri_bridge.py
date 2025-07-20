@@ -1,28 +1,30 @@
 # -*- coding: utf-8 -*-
 
-# Kiririセンサーブリッジプログラム (最終安定版)
-# - KIRIRI01/02の開始コマンド送信に対応
-# - 割り込み処理(handle_data)の堅牢性を最重要視し、例外発生を根絶
-# - ファイルへのログ出力、ログローテーション機能を追加
+# Kiririセンサーブリッジプログラム (MACアドレス直結版)
+# - 指定されたMACアドレスに直接接続を試みます
+# - ログ機能、自動再接続機能を搭載
 
 import asyncio
 import websockets
 import json
-from bleak import BleakScanner, BleakClient, BleakError
+from bleak import BleakClient, BleakError
 import logging
 import sys
-from typing import Set, Dict, Optional, Any, List
+from typing import Set, Dict, Optional, Any
 import os
 from logging.handlers import TimedRotatingFileHandler
 
 # --- 基本設定 ---
-TARGET_DEVICE_NAMES: List[str] = ["KIRIRI02", "KIRIRI01", "KIRI"]
+# ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+# ここに接続したいセンサーのMACアドレスを入力してください
+TARGET_MAC_ADDRESS: str = "EE:3C:71:89:4E:E5"
+# ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
 DATA_UUID: str = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 RX_UUID: str = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 WEBSOCKET_HOST: str = "localhost"
 WEBSOCKET_PORT: int = 8765
 RECONNECT_DELAY: float = 5.0
-SCAN_TIMEOUT: float = 10.0
 # ----------------
 
 # --- ログ設定 ---
@@ -66,46 +68,10 @@ latest_angles: Dict[str, Optional[Any]] = {"id": None, "y": 0.0, "x": 0.0}
 connected_clients: Set[websockets.WebSocketServerProtocol] = set()
 new_data_available = asyncio.Event()
 
-async def scan_and_select_sensor() -> Optional[str]:
-    """近くにある対象のBLEデバイスをスキャンし、ユーザーに選択させる"""
-    logging.info(f"'{', '.join(TARGET_DEVICE_NAMES)}' センサーを探しています (最大{SCAN_TIMEOUT}秒)...")
-    
-    try:
-        found_devices = {
-            dev.address: dev.name
-            for dev in await BleakScanner.discover(timeout=SCAN_TIMEOUT)
-            if dev.name and any(target in dev.name for target in TARGET_DEVICE_NAMES)
-        }
-    except BleakError as e:
-        logging.error(f"BLEスキャン中にエラーが発生しました: {e}")
-        return None
-
-    if not found_devices:
-        logging.error("対象のセンサーが見つかりませんでした。")
-        return None
-
-    devices_list = list(found_devices.items())
-    print("\n--- 見つかったKiririセンサー ---")
-    for i, (address, name) in enumerate(devices_list):
-        print(f"  [{i + 1}] {name} ({address})")
-    print("----------------------------")
-
-    while True:
-        try:
-            choice = input(f"接続するセンサーの番号を入力してください (1-{len(devices_list)}): ")
-            choice_index = int(choice) - 1
-            if 0 <= choice_index < len(devices_list):
-                selected_address = devices_list[choice_index][0]
-                return selected_address
-        except (ValueError, IndexError):
-            print("正しい番号を半角数字で入力してください。")
-        except (EOFError, KeyboardInterrupt):
-            logging.warning("センサー選択がキャンセルされました。")
-            return None
 
 # データ解析で使用するバイト定数
 START_MARKER = b'N:'
-SEPARATOR = ord(':')  # バイト値として取得
+SEPARATOR = ord(':')
 END_MARKER = ord('\r')
 
 def handle_data(sender: int, data: bytearray):
@@ -197,10 +163,12 @@ async def main():
     if sys.platform == "win32" and sys.version_info >= (3, 8):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
-    selected_address = await scan_and_select_sensor()
+    # スキャンと選択をせず、定義されたMACアドレスを直接使用する
+    selected_address = TARGET_MAC_ADDRESS
     if not selected_address:
-        logging.critical("センサーが選択されなかったのでプログラムを終了します。")
+        logging.critical("接続先のMACアドレスが設定されていません。プログラムを終了します。")
         return
+    logging.info(f"MACアドレス {selected_address} に直接接続を開始します。")
 
     try:
         server = await websockets.serve(websocket_handler, WEBSOCKET_HOST, WEBSOCKET_PORT)
