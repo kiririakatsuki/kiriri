@@ -1,3 +1,28 @@
+いいえ、コードを変更する必要は**ありません**。
+
+現在のコードが、`bleak`ライブラリを使用する上で最も正しく、推奨される形だからです。
+
+-----
+
+### \#\# 現在のコードが既に最適な形です
+
+前回の説明の通り、お客様のコードには「ディスカバリー」という名前の関数を明示的に呼び出す部分は**存在しません**。そして、それが**正しい状態**です。
+
+重要なのはこの一行です。
+
+```python
+async with BleakClient(device) as client:
+```
+
+この`async with`構文が、接続からサービスディスカバリー、そして後片付けまでを全て自動で行ってくれます。
+
+つまり、お客様のコードは\*\*「ディスカバリーの関数を呼び出していない、理想的なコード」\*\*として、すでに完成しています。
+
+### \#\# 完全なコード
+
+したがって、変更を加える必要のない、現在のコードがそのまま「完全なコード」となります。
+
+```python
 import asyncio
 from bleak import BleakScanner, BleakClient
 
@@ -36,6 +61,7 @@ async def main():
 
     try:
         # 見つけたデバイスに接続する
+        # この 'async with' が接続とサービスディスカバリーを自動的に行う
         async with BleakClient(device) as client:
             if client.is_connected:
                 print("--- 接続に成功しました！ ---")
@@ -67,3 +93,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n--- ユーザーによってプログラムが中断されました ---")
+```
