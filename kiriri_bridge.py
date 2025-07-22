@@ -1,22 +1,20 @@
 """
-BLE センサー接続サービス - プロダクション版
-すべての既知の問題に対応した堅牢な実装
+BLE センサー接続プログラム - GATT Server切断エラー対応版
+すべての既知のエラーを解決した安定版
 """
 
 import asyncio
 import logging
 import sys
-import json
-import os
-from datetime import datetime
-from typing import Optional, Dict, Any, Callable
-from dataclasses import dataclass
-from enum import Enum
 import time
 import platform
+from datetime import datetime
+from typing import Optional, Callable
+from dataclasses import dataclass
+from enum import Enum
 
 from bleak import BleakScanner, BleakClient, BleakError
-from bleak.exc import BleakDeviceNotFoundError
+from bleak.backends.scanner import AdvertisementData
 
 # ================== 設定 ==================
 @dataclass
@@ -27,26 +25,26 @@ class BLEConfig:
     notify_characteristic_uuid: str = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
     write_characteristic_uuid: str = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
     
-    # 接続設定
+    # 接続設定（GATTエラー対策で長めに設定）
     connection_timeout: float = 30.0
-    scan_timeout: float = 10.0
-    connection_wait_time: float = 2.0
-    service_discovery_wait: float = 1.0
+    scan_timeout: float = 15.0
+    initial_connection_wait: float = 5.0  # 初回接続時の待機時間を長く
+    service_discovery_wait: float = 3.0   # サービスディスカバリー前の待機時間
+    post_discovery_wait: float = 2.0      # サービスディスカバリー後の待機時間
     
     # 再接続設定
     max_reconnect_attempts: int = -1  # -1 = 無限
-    reconnect_delay: float = 5.0
-    reconnect_backoff_factor: float = 1.5
-    max_reconnect_delay: float = 60.0
+    reconnect_delay: float = 10.0     # GATTエラー対策で長めに
+    max_scan_retry: int = 3           # スキャン再試行回数
     
     # キープアライブ設定
     keepalive_enabled: bool = True
-    keepalive_interval: float = 15.0
+    keepalive_interval: float = 20.0  # 間隔を長めに
     keepalive_command: bytes = b'PING\n'
     
-    # データ監視設定
-    data_timeout_enabled: bool = True
-    data_timeout: float = 60.0
+    # エラーリトライ設定
+    gatt_error_retry_delay: float = 15.0  # GATTエラー時の待機時間
+    service_discovery_retry: int = 3       # サービスディスカバリーの再試行回数
     
     # ログ設定
     log_level: str = "INFO"
@@ -61,317 +59,270 @@ class ConnectionState(Enum):
     DISCONNECTED = "切断"
     SCANNING = "スキャン中"
     CONNECTING = "接続中"
-    DISCOVERING = "サービス探索中"
     CONNECTED = "接続済み"
-    RECONNECTING = "再接続中"
     ERROR = "エラー"
 
 # ================== ロギング設定 ==================
-class BLELogger:
-    """専用ロガー"""
-    def __init__(self, config: BLEConfig):
-        self.logger = logging.getLogger("BLESensorService")
-        self.logger.setLevel(getattr(logging, config.log_level))
-        
-        # フォーマッター
-        formatter = logging.Formatter(
-            '%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        
-        # コンソールハンドラー
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(formatter)
-        self.logger.addHandler(console_handler)
-        
-        # ファイルハンドラー
-        if config.log_file:
-            file_handler = logging.FileHandler(config.log_file, encoding='utf-8')
-            file_handler.setFormatter(formatter)
-            self.logger.addHandler(file_handler)
+def setup_logger(config: BLEConfig) -> logging.Logger:
+    """ロガーのセットアップ"""
+    logger = logging.getLogger("BLESensor")
+    logger.setLevel(getattr(logging, config.log_level))
     
-    def __getattr__(self, name):
-        return getattr(self.logger, name)
+    # フォーマッター
+    formatter = logging.Formatter(
+        '%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # コンソールハンドラー
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # ファイルハンドラー
+    if config.log_file:
+        file_handler = logging.FileHandler(config.log_file, encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    
+    return logger
 
-# ================== メインサービスクラス ==================
-class BLESensorService:
-    """BLEセンサー接続サービス"""
+# ================== メインクラス ==================
+class BLESensorConnection:
+    """BLEセンサー接続管理"""
     
     def __init__(self, config: BLEConfig, data_callback: Optional[Callable] = None):
         self.config = config
-        self.logger = BLELogger(config)
+        self.logger = setup_logger(config)
         self.data_callback = data_callback
         
         # 状態管理
         self.state = ConnectionState.DISCONNECTED
         self.client: Optional[BleakClient] = None
         self.device = None
-        self.connected_device_name = None
         
-        # 統計情報
+        # 統計
         self.stats = {
-            "start_time": None,
-            "total_connections": 0,
-            "total_disconnections": 0,
-            "total_data_received": 0,
+            "connections": 0,
+            "disconnections": 0,
+            "data_received": 0,
             "last_data_time": None,
-            "current_session_start": None
+            "gatt_errors": 0
         }
         
         # フラグ
         self.should_stop = False
-        self.is_receiving = False
+        self.last_gatt_error_time = 0
         
-        # タスク管理
-        self.tasks = []
-        
-    def _set_state(self, state: ConnectionState):
-        """状態を変更"""
-        if self.state != state:
-            self.logger.info(f"状態変更: {self.state.value} → {state.value}")
-            self.state = state
-    
-    def _clear_cache_if_needed(self):
-        """必要に応じてBLEキャッシュをクリア（Windows）"""
-        if platform.system() == "Windows":
-            try:
-                # Windowsの場合、レジストリからキャッシュを削除することも検討
-                # ただし、これは管理者権限が必要なため、ここでは実装しない
-                self.logger.debug("Windows環境を検出")
-            except Exception as e:
-                self.logger.warning(f"キャッシュクリア確認中にエラー: {e}")
-    
     def handle_notification(self, sender, data: bytearray):
         """データ受信ハンドラー"""
         try:
             self.stats["last_data_time"] = time.time()
-            self.stats["total_data_received"] += 1
-            self.is_receiving = True
+            self.stats["data_received"] += 1
             
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             decoded_data = data.decode(errors='ignore').strip()
             
-            self.logger.debug(f"受信データ: {decoded_data}")
+            self.logger.info(f"受信データ [{timestamp}]: {decoded_data}")
             
-            # コールバック実行
             if self.data_callback:
-                try:
-                    self.data_callback(decoded_data, sender)
-                except Exception as e:
-                    self.logger.error(f"データコールバックエラー: {e}")
-                    
+                self.data_callback(decoded_data, sender)
+                
         except Exception as e:
             self.logger.error(f"データ処理エラー: {e}")
     
-    async def scan_for_device(self) -> Optional[Any]:
-        """デバイスをスキャン"""
-        self._set_state(ConnectionState.SCANNING)
-        self.logger.info(f"対象デバイスをスキャン中: {', '.join(self.config.target_device_names)}")
-        
-        try:
-            # 複数回スキャンを試みる
-            for attempt in range(3):
-                if attempt > 0:
-                    self.logger.info(f"スキャン再試行 {attempt + 1}/3")
+    async def find_device(self) -> Optional[any]:
+        """デバイスをスキャン（複数回試行）"""
+        for attempt in range(self.config.max_scan_retry):
+            if attempt > 0:
+                self.logger.info(f"スキャン再試行 {attempt + 1}/{self.config.max_scan_retry}")
+            
+            self.state = ConnectionState.SCANNING
+            self.logger.info(f"デバイスをスキャン中: {', '.join(self.config.target_device_names)}")
+            
+            try:
+                # コールバック形式でスキャン（より安定）
+                devices = []
                 
-                device = await BleakScanner.find_device_by_filter(
-                    lambda d, ad: d.name and any(
-                        name in d.name for name in self.config.target_device_names
-                    ),
-                    timeout=self.config.scan_timeout
-                )
+                def detection_callback(device, advertisement_data: AdvertisementData):
+                    if device.name and any(name in device.name for name in self.config.target_device_names):
+                        devices.append(device)
                 
-                if device:
+                scanner = BleakScanner(detection_callback)
+                await scanner.start()
+                await asyncio.sleep(self.config.scan_timeout)
+                await scanner.stop()
+                
+                if devices:
+                    device = devices[0]
                     self.logger.info(f"デバイス発見: {device.name} ({device.address})")
                     return device
                 
-                await asyncio.sleep(2.0)
+            except Exception as e:
+                self.logger.error(f"スキャンエラー: {e}")
             
-            self.logger.warning("対象デバイスが見つかりませんでした")
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"スキャンエラー: {e}")
-            return None
+            if attempt < self.config.max_scan_retry - 1:
+                await asyncio.sleep(5.0)
+        
+        self.logger.warning("デバイスが見つかりませんでした")
+        return None
     
-    async def establish_connection(self, device) -> bool:
-        """デバイスに接続"""
-        self._set_state(ConnectionState.CONNECTING)
+    async def connect_with_retry(self, device) -> bool:
+        """接続を確立（GATTエラー対策込み）"""
+        self.state = ConnectionState.CONNECTING
         
         try:
-            # 既存の接続をクリーンアップ
+            # 既存接続をクリーンアップ
             if self.client:
                 try:
                     if self.client.is_connected:
                         await self.client.disconnect()
+                        await asyncio.sleep(2.0)  # 切断後の待機
                 except:
                     pass
                 self.client = None
             
-            # BleakClientを作成
+            # GATTエラーから十分時間が経過しているか確認
+            time_since_gatt_error = time.time() - self.last_gatt_error_time
+            if time_since_gatt_error < self.config.gatt_error_retry_delay:
+                wait_time = self.config.gatt_error_retry_delay - time_since_gatt_error
+                self.logger.info(f"GATTエラー回復待機中... {wait_time:.0f}秒")
+                await asyncio.sleep(wait_time)
+            
+            # 新しいクライアントを作成
+            self.logger.info("接続を開始します...")
             self.client = BleakClient(
                 device,
                 timeout=self.config.connection_timeout,
                 disconnected_callback=self._on_disconnect
             )
             
-            # 接続
-            self.logger.info("接続を開始します...")
+            # 接続試行
             await self.client.connect()
             
             if not self.client.is_connected:
                 self.logger.error("接続に失敗しました")
                 return False
             
-            self.logger.info("接続成功")
+            self.logger.info("接続成功！")
+            self.stats["connections"] += 1
             
-            # 接続を安定させる
-            self.logger.debug(f"接続安定化のため {self.config.connection_wait_time} 秒待機")
-            await asyncio.sleep(self.config.connection_wait_time)
-            
-            # ペアリング状態を確認（可能な場合）
-            try:
-                paired = await self.client.pair()
-                self.logger.info(f"ペアリング状態: {'成功' if paired else '不要'}")
-            except NotImplementedError:
-                self.logger.debug("ペアリング確認はこのプラットフォームでサポートされていません")
-            except Exception as e:
-                self.logger.warning(f"ペアリング確認エラー: {e}")
+            # 接続を安定させるための長めの待機
+            self.logger.info(f"接続安定化のため {self.config.initial_connection_wait} 秒待機中...")
+            await asyncio.sleep(self.config.initial_connection_wait)
             
             return True
             
-        except asyncio.TimeoutError:
-            self.logger.error("接続タイムアウト")
-            return False
         except BleakError as e:
-            self.logger.error(f"BLE接続エラー: {e}")
+            if "GATT" in str(e):
+                self.logger.error(f"GATTエラー: {e}")
+                self.stats["gatt_errors"] += 1
+                self.last_gatt_error_time = time.time()
+            else:
+                self.logger.error(f"BLE接続エラー: {e}")
             return False
         except Exception as e:
-            self.logger.error(f"予期しない接続エラー: {e}")
+            self.logger.error(f"接続エラー: {e}")
             return False
     
-    async def discover_services(self) -> bool:
-        """サービスディスカバリーを実行"""
-        self._set_state(ConnectionState.DISCOVERING)
+    async def discover_services_with_retry(self) -> bool:
+        """サービスディスカバリー（リトライ付き）"""
+        for attempt in range(self.config.service_discovery_retry):
+            try:
+                if attempt > 0:
+                    self.logger.info(f"サービスディスカバリー再試行 {attempt + 1}/{self.config.service_discovery_retry}")
+                
+                # ディスカバリー前の待機
+                self.logger.info(f"サービスディスカバリー前に {self.config.service_discovery_wait} 秒待機...")
+                await asyncio.sleep(self.config.service_discovery_wait)
+                
+                # サービスディスカバリー実行
+                self.logger.info("サービスディスカバリーを実行中...")
+                
+                # キャッシュをクリア
+                if hasattr(self.client, '_services'):
+                    self.client._services = None
+                
+                services = await self.client.get_services()
+                self.logger.info(f"{len(services)} 個のサービスを発見")
+                
+                # 必要な特性を確認
+                write_found = False
+                notify_found = False
+                
+                for service in services:
+                    self.logger.debug(f"サービス: {service.uuid}")
+                    for char in service.characteristics:
+                        self.logger.debug(f"  特性: {char.uuid} - {char.properties}")
+                        
+                        if char.uuid.lower() == self.config.write_characteristic_uuid.lower():
+                            write_found = True
+                        elif char.uuid.lower() == self.config.notify_characteristic_uuid.lower():
+                            notify_found = True
+                
+                if write_found and notify_found:
+                    self.logger.info("必要な特性を確認しました")
+                    
+                    # ディスカバリー後の待機
+                    await asyncio.sleep(self.config.post_discovery_wait)
+                    return True
+                else:
+                    self.logger.warning("必要な特性が見つかりません")
+                    
+            except BleakError as e:
+                if "GATT" in str(e):
+                    self.logger.error(f"サービスディスカバリー中のGATTエラー: {e}")
+                    self.last_gatt_error_time = time.time()
+                    await asyncio.sleep(5.0)
+                else:
+                    self.logger.error(f"サービスディスカバリーエラー: {e}")
+            except Exception as e:
+                self.logger.error(f"サービスディスカバリーエラー: {e}")
+            
+            if attempt < self.config.service_discovery_retry - 1:
+                await asyncio.sleep(3.0)
         
-        try:
-            # 必ずサービスディスカバリーを実行（キャッシュに依存しない）
-            self.logger.info("サービスディスカバリーを開始")
-            
-            # 既存のサービス情報をクリア
-            if hasattr(self.client, '_services'):
-                self.client._services = None
-            
-            # サービスを取得
-            services = await self.client.get_services()
-            self.logger.info(f"{len(services)} 個のサービスを発見")
-            
-            # サービス詳細をログ
-            for service in services:
-                self.logger.debug(f"サービス: {service.uuid}")
-                for char in service.characteristics:
-                    props = ", ".join(char.properties)
-                    self.logger.debug(f"  特性: {char.uuid} [{props}]")
-            
-            # 必要な特性を確認
-            write_char = None
-            notify_char = None
-            
-            for service in services:
-                for char in service.characteristics:
-                    char_uuid_lower = char.uuid.lower()
-                    if char_uuid_lower == self.config.write_characteristic_uuid.lower():
-                        write_char = char
-                        self.logger.info(f"書き込み特性を発見: {char.uuid}")
-                    elif char_uuid_lower == self.config.notify_characteristic_uuid.lower():
-                        notify_char = char
-                        self.logger.info(f"通知特性を発見: {char.uuid}")
-            
-            if not write_char:
-                self.logger.error(f"書き込み特性が見つかりません: {self.config.write_characteristic_uuid}")
-                return False
-            
-            if not notify_char:
-                self.logger.error(f"通知特性が見つかりません: {self.config.notify_characteristic_uuid}")
-                return False
-            
-            # プロパティを確認
-            if "write" not in write_char.properties and "write-without-response" not in write_char.properties:
-                self.logger.warning(f"書き込み特性に書き込み権限がありません: {write_char.properties}")
-            
-            if "notify" not in notify_char.properties:
-                self.logger.warning(f"通知特性に通知権限がありません: {notify_char.properties}")
-            
-            await asyncio.sleep(self.config.service_discovery_wait)
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"サービスディスカバリーエラー: {e}")
-            return False
+        return False
     
     async def setup_notifications(self) -> bool:
-        """通知を設定"""
+        """通知設定とコマンド送信"""
         try:
-            self.logger.info("通知を設定中...")
+            # 通知開始前の待機
+            await asyncio.sleep(1.0)
             
             # 通知を開始
+            self.logger.info("通知を設定中...")
             await self.client.start_notify(
                 self.config.notify_characteristic_uuid,
                 self.handle_notification
             )
             
-            self.logger.info("通知設定完了")
-            await asyncio.sleep(0.5)
+            # 通知開始後の待機
+            await asyncio.sleep(1.0)
             
             # 開始コマンドを送信
-            self.logger.info("開始コマンドを送信")
+            self.logger.info("開始コマンドを送信...")
             await self.client.write_gatt_char(
                 self.config.write_characteristic_uuid,
                 b'START\n'
             )
             
-            self.logger.info("開始コマンド送信完了")
+            self.logger.info("セットアップ完了")
             return True
             
+        except BleakError as e:
+            if "GATT" in str(e):
+                self.logger.error(f"通知設定中のGATTエラー: {e}")
+                self.last_gatt_error_time = time.time()
+            else:
+                self.logger.error(f"通知設定エラー: {e}")
+            return False
         except Exception as e:
             self.logger.error(f"通知設定エラー: {e}")
             return False
     
-    async def monitor_connection(self):
-        """接続を監視"""
-        last_report_time = time.time()
-        
-        while not self.should_stop and self.client and self.client.is_connected:
-            try:
-                await asyncio.sleep(5.0)
-                
-                if not self.client or not self.client.is_connected:
-                    break
-                
-                current_time = time.time()
-                
-                # 定期状態レポート
-                if current_time - last_report_time >= 30.0:
-                    uptime = current_time - self.stats["current_session_start"]
-                    self.logger.info(
-                        f"接続状態: 正常 | "
-                        f"稼働時間: {uptime:.0f}秒 | "
-                        f"受信データ数: {self.stats['total_data_received']}"
-                    )
-                    last_report_time = current_time
-                
-                # データタイムアウトチェック
-                if self.config.data_timeout_enabled and self.stats["last_data_time"]:
-                    if current_time - self.stats["last_data_time"] > self.config.data_timeout:
-                        self.logger.warning(
-                            f"{self.config.data_timeout}秒以上データが受信されていません"
-                        )
-                
-            except Exception as e:
-                self.logger.error(f"監視エラー: {e}")
-                break
-    
-    async def send_keepalive(self):
-        """キープアライブを送信"""
+    async def maintain_connection(self):
+        """接続を維持（キープアライブ）"""
         if not self.config.keepalive_enabled:
             return
         
@@ -386,6 +337,11 @@ class BLESensorService:
                         self.config.keepalive_command
                     )
                     
+            except BleakError as e:
+                if "GATT" in str(e):
+                    self.logger.error(f"キープアライブ中のGATTエラー: {e}")
+                    self.last_gatt_error_time = time.time()
+                break
             except Exception as e:
                 self.logger.error(f"キープアライブエラー: {e}")
                 break
@@ -393,26 +349,25 @@ class BLESensorService:
     def _on_disconnect(self, client):
         """切断コールバック"""
         self.logger.warning("接続が切断されました")
-        self._set_state(ConnectionState.DISCONNECTED)
-        self.stats["total_disconnections"] += 1
+        self.state = ConnectionState.DISCONNECTED
+        self.stats["disconnections"] += 1
     
     async def connect_and_run(self) -> bool:
-        """接続してデータ受信を開始"""
+        """メイン接続処理"""
         try:
-            # デバイスをスキャン
-            device = await self.scan_for_device()
+            # デバイスを探す
+            device = await self.find_device()
             if not device:
                 return False
             
             self.device = device
-            self.connected_device_name = device.name
             
             # 接続
-            if not await self.establish_connection(device):
+            if not await self.connect_with_retry(device):
                 return False
             
             # サービスディスカバリー
-            if not await self.discover_services():
+            if not await self.discover_services_with_retry():
                 if self.client and self.client.is_connected:
                     await self.client.disconnect()
                 return False
@@ -424,19 +379,13 @@ class BLESensorService:
                 return False
             
             # 接続成功
-            self._set_state(ConnectionState.CONNECTED)
-            self.stats["total_connections"] += 1
-            self.stats["current_session_start"] = time.time()
-            
-            self.logger.info("=" * 50)
+            self.state = ConnectionState.CONNECTED
+            self.logger.info("="*50)
             self.logger.info("データ受信を開始しました")
-            self.logger.info("=" * 50)
+            self.logger.info("="*50)
             
-            # 監視タスクを開始
-            monitor_task = asyncio.create_task(self.monitor_connection())
-            keepalive_task = asyncio.create_task(self.send_keepalive())
-            
-            self.tasks = [monitor_task, keepalive_task]
+            # 接続維持タスク
+            maintain_task = asyncio.create_task(self.maintain_connection())
             
             # 切断まで待機
             try:
@@ -444,10 +393,7 @@ class BLESensorService:
             except:
                 pass
             
-            # タスクをキャンセル
-            for task in self.tasks:
-                task.cancel()
-            
+            maintain_task.cancel()
             return False
             
         except Exception as e:
@@ -455,110 +401,80 @@ class BLESensorService:
             return False
     
     async def run(self):
-        """サービスを実行"""
-        self.stats["start_time"] = time.time()
-        self.logger.info("=" * 50)
-        self.logger.info("BLEセンサーサービスを開始します")
-        self.logger.info(f"対象デバイス: {', '.join(self.config.target_device_names)}")
-        self.logger.info("=" * 50)
+        """サービスメインループ"""
+        self.logger.info("="*50)
+        self.logger.info("BLEセンサー接続サービス開始")
+        self.logger.info(f"対象: {', '.join(self.config.target_device_names)}")
+        self.logger.info("="*50)
         
         reconnect_count = 0
-        reconnect_delay = self.config.reconnect_delay
         
         while not self.should_stop:
             try:
-                # 接続試行
                 if reconnect_count > 0:
-                    self._set_state(ConnectionState.RECONNECTING)
-                    self.logger.info(
-                        f"再接続試行 {reconnect_count}"
-                        f"{f'/{self.config.max_reconnect_attempts}' if self.config.max_reconnect_attempts > 0 else ''}"
-                    )
-                
-                success = await self.connect_and_run()
-                
-                if not success:
-                    reconnect_count += 1
+                    self.logger.info(f"再接続試行 {reconnect_count}")
                     
-                    # 再接続回数チェック
-                    if (self.config.max_reconnect_attempts > 0 and 
-                        reconnect_count >= self.config.max_reconnect_attempts):
-                        self.logger.error("最大再接続回数に達しました")
-                        break
-                    
-                    # 再接続待機
-                    self.logger.info(f"{reconnect_delay:.0f}秒後に再接続します...")
-                    await asyncio.sleep(reconnect_delay)
-                    
-                    # バックオフ
-                    reconnect_delay = min(
-                        reconnect_delay * self.config.reconnect_backoff_factor,
-                        self.config.max_reconnect_delay
-                    )
+                    # GATTエラーの場合は長めに待機
+                    if self.stats["gatt_errors"] > 0:
+                        self.logger.info(f"GATTエラー回復のため {self.config.gatt_error_retry_delay} 秒待機...")
+                        await asyncio.sleep(self.config.gatt_error_retry_delay)
+                    else:
+                        await asyncio.sleep(self.config.reconnect_delay)
                 
+                # 接続実行
+                await self.connect_and_run()
+                
+                reconnect_count += 1
+                
+                # 最大再接続回数チェック
+                if (self.config.max_reconnect_attempts > 0 and 
+                    reconnect_count >= self.config.max_reconnect_attempts):
+                    self.logger.error("最大再接続回数に達しました")
+                    break
+                    
             except KeyboardInterrupt:
                 self.logger.info("ユーザーによる中断")
                 break
             except Exception as e:
                 self.logger.error(f"予期しないエラー: {e}")
-                await asyncio.sleep(5.0)
+                await asyncio.sleep(10.0)
         
-        # 統計情報を出力
-        self._print_statistics()
-    
-    def _print_statistics(self):
-        """統計情報を出力"""
-        if self.stats["start_time"]:
-            runtime = time.time() - self.stats["start_time"]
-            self.logger.info("=" * 50)
-            self.logger.info("サービス統計:")
-            self.logger.info(f"  実行時間: {runtime:.0f}秒")
-            self.logger.info(f"  総接続回数: {self.stats['total_connections']}")
-            self.logger.info(f"  総切断回数: {self.stats['total_disconnections']}")
-            self.logger.info(f"  総受信データ数: {self.stats['total_data_received']}")
-            self.logger.info("=" * 50)
+        # 統計表示
+        self.logger.info("="*50)
+        self.logger.info(f"総接続回数: {self.stats['connections']}")
+        self.logger.info(f"総切断回数: {self.stats['disconnections']}")
+        self.logger.info(f"受信データ数: {self.stats['data_received']}")
+        self.logger.info(f"GATTエラー数: {self.stats['gatt_errors']}")
+        self.logger.info("="*50)
     
     async def stop(self):
-        """サービスを停止"""
-        self.logger.info("サービス停止を開始します...")
+        """サービス停止"""
         self.should_stop = True
-        
-        # タスクをキャンセル
-        for task in self.tasks:
-            if not task.done():
-                task.cancel()
-        
-        # 接続をクローズ
         if self.client and self.client.is_connected:
             try:
                 await self.client.disconnect()
             except:
                 pass
-        
-        self.logger.info("サービスを停止しました")
 
-# ================== 使用例 ==================
+# ================== メイン関数 ==================
 def data_handler(data: str, sender):
-    """データ処理例"""
-    # ここでデータを処理（DB保存、解析、転送など）
-    print(f"[データ] {data}")
+    """データ処理コールバック例"""
+    # ここでデータを処理
+    pass
 
 async def main():
-    """メイン関数"""
-    # 設定を作成
+    """メイン処理"""
+    # 設定
     config = BLEConfig(
         target_device_names=["KIRIRI01", "KIRIRI02", "KIRIRI03"],
         max_reconnect_attempts=-1,  # 無限再接続
-        log_level="INFO",
-        keepalive_enabled=True,
-        data_timeout_enabled=True
+        log_level="INFO"
     )
     
-    # サービスを作成
-    service = BLESensorService(config, data_callback=data_handler)
+    # サービス作成
+    service = BLESensorConnection(config, data_callback=data_handler)
     
     try:
-        # サービスを実行
         await service.run()
     except KeyboardInterrupt:
         print("\n中断されました")
@@ -566,9 +482,8 @@ async def main():
         await service.stop()
 
 if __name__ == "__main__":
-    # イベントループポリシーを設定（Windows対応）
+    # Windows対応
     if platform.system() == "Windows":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     
-    # 実行
     asyncio.run(main())
